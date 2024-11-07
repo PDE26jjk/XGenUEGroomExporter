@@ -380,7 +380,6 @@ class SaveXGenWindow(QtWidgets.QDialog):
         self.combo.addItem("     ---     ")
         self.uvSetStr = QtWidgets.QLabel("Selected: None")
 
-        # 连接下拉框的信号到槽
         self.combo.currentIndexChanged.connect(self.update_label)
         hBox2.addWidget(self.combo)
         hBox.addStretch(2)
@@ -502,18 +501,15 @@ class SaveXGenWindow(QtWidgets.QDialog):
                     SaveXGenWindow.Content(fnDepNode, fnDepNode.name(), SaveXGenWindow.curveType, groupNameStr, True,
                                            False))
 
-        self.table.setRowCount(len(contentList))  # 设置行数
-        # 填充数据到表格
+        self.table.setRowCount(len(contentList))
         for row in range(len(contentList)):
-            # 字符串列
             item = QtWidgets.QTableWidgetItem(contentList[row].showName)
-            # item.setTextAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
             item.setFlags(QtCore.Qt.ItemFlag.ItemIsEnabled)  # 不可编辑
             self.table.setItem(row, 0, item)
 
             item = QtWidgets.QTableWidgetItem(contentList[row].Type)
             # item.setTextAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
-            item.setFlags(QtCore.Qt.ItemFlag.ItemIsEnabled)  # 不可编辑
+            item.setFlags(QtCore.Qt.ItemFlag.ItemIsEnabled)
             self.table.setItem(row, 1, item)
 
             self.table.setCellWidget(row, 2, contentList[row].groupName)
@@ -525,7 +521,6 @@ class SaveXGenWindow(QtWidgets.QDialog):
     def findBoundMesh(self, xgDes):
         itDg = om.MItDependencyGraph(xgDes.object(), direction=om.MItDependencyGraph.kUpstream)
         boundMesh = None
-        # itDg.resetTo(xgDes)
         while not itDg.isDone():
             dn = om.MFnDependencyNode(itDg.currentNode())
             if dn.typeName == 'xgmSplineBase':
