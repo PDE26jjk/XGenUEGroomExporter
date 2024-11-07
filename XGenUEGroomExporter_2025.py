@@ -338,7 +338,7 @@ class SaveXGenWindow(QtWidgets.QDialog):
         main_layout.addLayout(hBox)
 
         self.table = QtWidgets.QTableWidget(self)
-        self.table.setColumnCount(6)  # 设置列数
+        self.table.setColumnCount(6)
         self.table.setHorizontalHeaderLabels(["Name", "Type", "Group name", "Is guide", "Bake UV", ""])
         self.table.horizontalHeader().setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeToContents)
         self.table.setColumnWidth(3, 140)
@@ -366,22 +366,18 @@ class SaveXGenWindow(QtWidgets.QDialog):
             cmds.frameLayout(label='Bake UV', collapsable=True, collapse=True, manage=True))
         self.Bakeframe: QtWidgets.QWidget = shiboken.wrapInstance(int(self.Bakeframe), QtWidgets.QWidget)
         self.Bakeframe.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Maximum)
-        # self.Bakeframe.setParent(self)
         frameLayout: QtWidgets.QLayout = self.Bakeframe.children()[2].children()[0]
         self.MeshName = QtWidgets.QLabel(f"Mesh : ---")
+
         hBox = QtWidgets.QHBoxLayout()
         hBox.setContentsMargins(10, 10, 10, 10)
         hBox.addWidget(self.MeshName)
         hBox2 = QtWidgets.QHBoxLayout()
         label = QtWidgets.QLabel("UV Set : ")
         hBox2.addWidget(label)
-        # 创建下拉框
+
         self.combo = QtWidgets.QComboBox()
-
-        # 添加选项
         self.combo.addItem("     ---     ")
-
-        # 创建标签以显示选定的项
         self.uvSetStr = QtWidgets.QLabel("Selected: None")
 
         # 连接下拉框的信号到槽
@@ -405,16 +401,13 @@ class SaveXGenWindow(QtWidgets.QDialog):
         self.save_button = QtWidgets.QPushButton("Save Alembic File", self)
         self.save_button.clicked.connect(self.save_abc)
 
-        # 第二按钮
         self.cancel_button = QtWidgets.QPushButton("Close", self)  # 关闭
         self.cancel_button.clicked.connect(self.close)  # 关闭窗口
 
-        # 水平布局放置两个按钮
         button_layout = QtWidgets.QHBoxLayout()
         button_layout.addWidget(self.save_button)
         button_layout.addWidget(self.cancel_button)
 
-        # 垂直布局
         main_layout.addWidget(self.table)
         main_layout.addWidget(self.Bakeframe)
         main_layout.addWidget(self.separator)
@@ -440,13 +433,12 @@ class SaveXGenWindow(QtWidgets.QDialog):
         self.uvSetStr.setText(selected_option)
 
     def save_abc(self):
-        """打开保存文件对话框"""
         if len(self.contentList) == 0:
             print("No content")
             return
         file_path = cmds.fileDialog2(
             dialogStyle=2,
-            caption="保存Alembic文件",
+            caption="Save Alembic file",
             fileMode=0,  # 0: 保存文件
             okCaption="save",
             # defaultExtension='abc',
