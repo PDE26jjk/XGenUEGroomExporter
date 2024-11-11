@@ -10,6 +10,7 @@ import zlib
 import json
 import maya.cmds as cmds
 from typing import List
+import time
 
 
 # %%
@@ -62,36 +63,55 @@ def getXgenData(fnDepNode: om.MFnDependencyNode):
     # print(dataJson)
     Header = dataJson['Header']
 
-    Items = []
-    for k, v in [*dataJson['Items'][0].items(), *dataJson['RefMeshArray'][0].items()]:
-        if isinstance(v, int):
-            group = v >> 32
-            index = v & 0xFFFFFFFF
-            Items.append((k, (group, index)))
+    Items = dict()
+
+    def readItems(items):
+        for k, v in items:
+            if isinstance(v, int):
+                group = v >> 32
+                index = v & 0xFFFFFFFF
+                addr = (group, index)
+                if k not in Items:
+                    Items[k] = [addr]
+                else:
+                    Items[k].append(addr)
+
+    for i in range(len(dataJson['Items'])):
+        readItems(dataJson['Items'][i].items())
+    for i in range(len(dataJson['RefMeshArray'])):
+        readItems(dataJson['RefMeshArray'][i].items())
 
     # print(Items)
+    decompressedData = dict()
+
     def decompressData(group, index):
-        if Header['GroupBase64']:
-            raise Exception("我还没有碰到Base64的情况，请提醒我更新代码")
-        if Header['GroupDeflate']:
-            validData = zlib.decompress(rawData[dataBlocks[group][0] + 32:])
+        if group not in decompressedData:
+            if Header['GroupBase64']:
+                raise Exception("我还没有碰到Base64的情况，请提醒我更新代码")
+            if Header['GroupDeflate']:
+                validData = zlib.decompress(rawData[dataBlocks[group][0] + 32:])
+            else:
+                validData = rawData[dataBlocks[group][0]:dataBlocks[group][1]]
+            decompressedData[group] = validData
         else:
-            validData = rawData[dataBlocks[group][0]:dataBlocks[group][1]]
+            validData = decompressedData[group]
         blocks = GetBlocks(validData)
         return validData[blocks[index][0]:blocks[index][1]]
 
-    # FnTransform = om.MFnTransform()
-    # transformObj = FnTransform.create()
-    PrimitiveInfos = None
-    posAddr = None
-    for item in Items:
-        if item[0] == 'PrimitiveInfos':
+    PrimitiveInfosList = []
+    PositionsDataList = []
+    for k, v in Items.items():
+        if k == 'PrimitiveInfos':
             dtype = np.dtype([('offset', 'u4'), ('length', 'u8')])
-            PrimitiveInfos = np.frombuffer(decompressData(*item[1]), dtype=dtype)
-        if item[0] == 'Positions':
-            posData = np.frombuffer(decompressData(*item[1]), dtype=np.float32).reshape(-1, 3)
+            for addr in v:
+                PrimitiveInfos = np.frombuffer(decompressData(*addr), dtype=dtype)
+                PrimitiveInfosList.append(PrimitiveInfos)
+        if k == 'Positions':
+            for addr in v:
+                posData = np.frombuffer(decompressData(*addr), dtype=np.float32).reshape(-1, 3)
+                PositionsDataList.append(posData)
 
-    return PrimitiveInfos, posData, posAddr
+    return PrimitiveInfosList, PositionsDataList
 
 
 # %%
@@ -184,9 +204,10 @@ def write_curves(curveObj: abcGeom.OCurves, fnDepNode: om.MFnDependencyNode, nee
 
 
 def write_xgen(curveObj: abcGeom.OCurves, fnDepNode: om.MFnDependencyNode, needHairRootList=False):
-    PrimitiveInfos, posData, posAddr = getXgenData(fnDepNode)
-
-    numCurves = len(PrimitiveInfos)
+    PrimitiveInfosList, PositionsDataList = getXgenData(fnDepNode)
+    numCurves = 0
+    for i, PrimitiveInfos in enumerate(PrimitiveInfosList):
+        numCurves += len(PrimitiveInfos)
 
     orders = imath.IntArray(numCurves)
     nVertices = imath.IntArray(numCurves)
@@ -203,22 +224,26 @@ def write_xgen(curveObj: abcGeom.OCurves, fnDepNode: om.MFnDependencyNode, needH
     hairRootlist = []
     knots = []
 
-    for i, PrimitiveInfo in enumerate(PrimitiveInfos):
-        offset = PrimitiveInfo[0]
-        length = int(PrimitiveInfo[1])
-        stride = 12
-        if length < 2:
-            continue
-        pointslist += posData[offset:offset + length].reshape(-1).tolist()
-        if needHairRootList:
-            hairRootlist.append(om.MPoint(posData[offset]))
-        orders[i] = degree + 1
-        nVertices[i] = length
+    curveIndex = 0
+    for j in range(len(PrimitiveInfosList)):
+        PrimitiveInfos = PrimitiveInfosList[j]
+        posData = PositionsDataList[j]
+        for i, PrimitiveInfo in enumerate(PrimitiveInfos):
+            offset = PrimitiveInfo[0]
+            length = int(PrimitiveInfo[1])
+            if length < 2:
+                continue
+            pointslist += posData[offset:offset + length].reshape(-1).tolist()
+            if needHairRootList:
+                hairRootlist.append(om.MPoint(posData[offset]))
+            orders[curveIndex] = degree + 1
+            nVertices[curveIndex] = length
 
-        degree = 3
-        knotsInsideNum = length - degree + 1
-        knotsList = [*([0] * (degree - 1)), *list(range(knotsInsideNum)), *([knotsInsideNum - 1] * (degree - 1))]
-        knots += knotsList
+            degree = 3
+            knotsInsideNum = length - degree + 1
+            knotsList = [*([0] * (degree - 1)), *list(range(knotsInsideNum)), *([knotsInsideNum - 1] * (degree - 1))]
+            knots += knotsList
+            curveIndex += 1
 
     samp.setCurvesNumVertices(nVertices)
     samp.setPositions(floatList2V3fArray(pointslist))
@@ -362,11 +387,19 @@ class SaveXGenWindow(QtWidgets.QDialog):
         self.table.clearContents()
         self.table.setRowCount(0)
 
-        self.Bakeframe = om1ui.MQtUtil.findControl(
-            cmds.frameLayout(label='Bake UV', collapsable=True, collapse=True, manage=True))
-        self.Bakeframe: QtWidgets.QWidget = shiboken.wrapInstance(int(self.Bakeframe), QtWidgets.QWidget)
-        self.Bakeframe.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Maximum)
-        frameLayout: QtWidgets.QLayout = self.Bakeframe.children()[2].children()[0]
+        try:
+            self.Bakeframe = om1ui.MQtUtil.findControl(
+                cmds.frameLayout(label='Bake UV', collapsable=True, collapse=True, manage=True))
+            self.Bakeframe: QtWidgets.QWidget = shiboken.wrapInstance(int(self.Bakeframe), QtWidgets.QWidget)
+            self.Bakeframe.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Maximum)
+            # self.Bakeframe.setParent(self)
+            frameLayout: QtWidgets.QLayout = self.Bakeframe.children()[2].children()[0]
+        except:
+            self.Bakeframe = QtWidgets.QFrame(self)
+            self.Bakeframe.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Maximum)
+            frameLayout = QtWidgets.QVBoxLayout(self.Bakeframe)
+            self.Bakeframe.children().append(frameLayout)
+
         self.MeshName = QtWidgets.QLabel(f"Mesh : ---")
 
         hBox = QtWidgets.QHBoxLayout()
@@ -432,12 +465,13 @@ class SaveXGenWindow(QtWidgets.QDialog):
         self.uvSetStr.setText(selected_option)
 
     def save_abc(self):
+        """打开保存文件对话框"""
         if len(self.contentList) == 0:
             print("No content")
             return
         file_path = cmds.fileDialog2(
             dialogStyle=2,
-            caption="Save Alembic file",
+            caption="保存Alembic文件",
             fileMode=0,  # 0: 保存文件
             okCaption="save",
             # defaultExtension='abc',
@@ -445,6 +479,7 @@ class SaveXGenWindow(QtWidgets.QDialog):
             ff='Alembic Files (*.abc);;All Files (*)'
         )
         self.save_path = file_path[0]
+        startTime = time.time()
         archive = abc.OArchive(file_path[0])
         for item in self.contentList:
             fnDepNode = item.fnDepNode
@@ -457,8 +492,7 @@ class SaveXGenWindow(QtWidgets.QDialog):
             write_group_and_guide(curveObj, item.groupName.text(), item.isGuide.isChecked())
             if needBakeUV:
                 back_uv(curveObj, rootList, self.bakeMesh, self.uvSetStr.text())
-
-        print(f"Data has been saved in {file_path[0]}")
+        print(f"Data has been saved in {file_path[0]} , it took {time.time() - startTime:.2f} seconds.")
         return file_path[0]
 
     def fillWithSelectList(self):
