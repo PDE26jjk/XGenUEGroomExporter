@@ -156,7 +156,7 @@ def write_curves(curveObj: abcGeom.OCurves, fnDepNode: om.MFnDependencyNode, nee
     elif curve.degree == 1:
         samp.setType(abcGeom.CurveType.kLinear)
     else:
-        # samp.setType(abcGeom.CurveType.kVariableOrder)
+        # samp.setType(abcGeom.CurveType.kVariableOrder) # https://github.com/alembic/alembic/issues/458 After alembic fix this bug, use this line.
         samp.setType(abcGeom.CurveType.kLinear)
         # samp.setType(abcGeom.CurveType.kCubic)
         pass
