@@ -156,7 +156,7 @@ def write_curves(curveObj: abcGeom.OCurves, fnDepNode: om.MFnDependencyNode, nee
     elif curve.degree == 1:
         samp.setType(abcGeom.CurveType.kLinear)
     else:
-        # samp.setType(abcGeom.CurveType.kVariableOrder) # https://github.com/alembic/alembic/issues/458 After alembic fix this bug, use this line.
+        # samp.setType(abcGeom.CurveType.kVariableOrder) # https://github.com/alembic/alembic/issues/458 After alembic fixing this bug, use this line.
         samp.setType(abcGeom.CurveType.kLinear)
         # samp.setType(abcGeom.CurveType.kCubic)
         pass
@@ -295,8 +295,12 @@ def back_uv(curveObj: abcGeom.OCurves, hairRootList: list, bakeMesh: om.MFnMesh,
 
 
 # %%
-from PySide6 import QtCore, QtWidgets
-import shiboken6 as shiboken
+try:
+    from PySide6 import QtCore, QtWidgets
+    import shiboken6 as shiboken
+except:
+    from PySide2 import QtCore, QtWidgets
+    import shiboken2 as shiboken
 
 import maya.OpenMayaUI as om1ui
 
