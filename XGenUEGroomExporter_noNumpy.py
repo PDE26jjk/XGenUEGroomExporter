@@ -101,6 +101,7 @@ def getXgenData(fnDepNode: om.MFnDependencyNode):
 
     PrimitiveInfosList = []
     PositionsDataList = []
+    WidthsDataList = []
     for k, v in Items.items():
         if k == 'PrimitiveInfos':
             dtype_format = '<IQ'
@@ -121,8 +122,14 @@ def getXgenData(fnDepNode: om.MFnDependencyNode):
 
                 PositionsDataList.append(posData)
 
+        if k == 'WIDTH_CV':
+            for addr in v:
+                decompressed_data = decompressData(*addr)
+                widthData = array.array('f', decompressed_data)
+                WidthsDataList.append(widthData)
 
-    return PrimitiveInfosList, PositionsDataList
+    return PrimitiveInfosList, PositionsDataList, WidthsDataList
+
 
 
 # %%
@@ -215,7 +222,7 @@ def write_curves(curveObj: abcGeom.OCurves, fnDepNode: om.MFnDependencyNode, nee
 
 
 def write_xgen(curveObj: abcGeom.OCurves, fnDepNode: om.MFnDependencyNode, needHairRootList=False):
-    PrimitiveInfosList, PositionsDataList = getXgenData(fnDepNode)
+    PrimitiveInfosList, PositionsDataList, WidthsDataList = getXgenData(fnDepNode)
     numCurves = 0
     numCVs = 0
     for i, PrimitiveInfos in enumerate(PrimitiveInfosList):
@@ -234,8 +241,9 @@ def write_xgen(curveObj: abcGeom.OCurves, fnDepNode: om.MFnDependencyNode, needH
     samp.setType(abcGeom.CurveType.kCubic)
 
     degree = 3
-    pointslist = []
+    # pointslist = []
     pointArray = imath.V3fArray(numCVs)
+    widthArray = imath.FloatArray(numCVs)
     hairRootlist = []
     knots = []
 
@@ -244,6 +252,7 @@ def write_xgen(curveObj: abcGeom.OCurves, fnDepNode: om.MFnDependencyNode, needH
     for j in range(len(PrimitiveInfosList)):
         PrimitiveInfos = PrimitiveInfosList[j]
         posData = PositionsDataList[j]
+        widthData = WidthsDataList[j]
         for i, PrimitiveInfo in enumerate(PrimitiveInfos):
             offset = PrimitiveInfo[0]
             length = int(PrimitiveInfo[1])
@@ -257,6 +266,7 @@ def write_xgen(curveObj: abcGeom.OCurves, fnDepNode: om.MFnDependencyNode, needH
                 pointArray[cvIndex].z = posData[startAddr + 2]
                 if k == 0 and needHairRootList:
                     hairRootlist.append(om.MPoint(pointArray[cvIndex]))
+                widthArray[cvIndex] = widthData[offset + k]
                 startAddr += 3
                 cvIndex += 1
             orders[curveIndex] = degree + 1
@@ -291,12 +301,12 @@ def write_xgen(curveObj: abcGeom.OCurves, fnDepNode: om.MFnDependencyNode, needH
     # cvColor.set(cvColorArray)
 
     # write width
-    # widths = list2ImathArray([0.1], imath.FloatArray)
-    # widths = abcGeom.OFloatGeomParamSample(widths, abcGeom.GeometryScope.kConstantScope)
-    # samp.setWidths(widths)
+    widths = abcGeom.OFloatGeomParamSample(widthArray, abcGeom.GeometryScope.kVertexScope)
+    samp.setWidths(widths)
     curveschema.set(samp)
     if needHairRootList:
         return hairRootlist
+
 
 
 

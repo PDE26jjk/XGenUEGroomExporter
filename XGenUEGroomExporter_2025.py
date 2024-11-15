@@ -5,6 +5,7 @@ import maya.OpenMaya as om1
 import maya.api.OpenMaya as om
 import imath
 import numpy as np
+import array
 import ctypes
 import zlib
 import json
@@ -100,6 +101,7 @@ def getXgenData(fnDepNode: om.MFnDependencyNode):
 
     PrimitiveInfosList = []
     PositionsDataList = []
+    WidthsDataList = []
     for k, v in Items.items():
         if k == 'PrimitiveInfos':
             dtype = np.dtype([('offset', 'u4'), ('length', 'u8')])
@@ -108,10 +110,14 @@ def getXgenData(fnDepNode: om.MFnDependencyNode):
                 PrimitiveInfosList.append(PrimitiveInfos)
         if k == 'Positions':
             for addr in v:
-                posData = np.frombuffer(decompressData(*addr), dtype=np.float32).reshape(-1, 3)
+                posData = array.array('f', decompressData(*addr))
                 PositionsDataList.append(posData)
+        if k == 'WIDTH_CV':
+            for addr in v:
+                widthData = array.array('f', decompressData(*addr))
+                WidthsDataList.append(widthData)
 
-    return PrimitiveInfosList, PositionsDataList
+    return PrimitiveInfosList, PositionsDataList, WidthsDataList
 
 
 # %%
@@ -204,12 +210,17 @@ def write_curves(curveObj: abcGeom.OCurves, fnDepNode: om.MFnDependencyNode, nee
 
 
 def write_xgen(curveObj: abcGeom.OCurves, fnDepNode: om.MFnDependencyNode, needHairRootList=False):
-    PrimitiveInfosList, PositionsDataList = getXgenData(fnDepNode)
+    PrimitiveInfosList, PositionsDataList, WidthsDataList = getXgenData(fnDepNode)
     numCurves = 0
+    numCVs = 0
     for i, PrimitiveInfos in enumerate(PrimitiveInfosList):
         numCurves += len(PrimitiveInfos)
+        for PrimitiveInfo in PrimitiveInfos:
+            numCVs += PrimitiveInfo[1]
 
-    orders = imath.IntArray(numCurves)
+    numCVs = int(numCVs)
+
+    orders = imath.UnsignedCharArray(numCurves)
     nVertices = imath.IntArray(numCurves)
     curveschema: abcGeom.OCurvesSchema = curveObj.getSchema()
     cp: abc.OCompoundProperty = curveschema.getArbGeomParams()
@@ -220,22 +231,34 @@ def write_xgen(curveObj: abcGeom.OCurves, fnDepNode: om.MFnDependencyNode, needH
     samp.setType(abcGeom.CurveType.kCubic)
 
     degree = 3
-    pointslist = []
+    # pointslist = []
+    pointArray = imath.V3fArray(numCVs)
+    widthArray = imath.FloatArray(numCVs)
     hairRootlist = []
     knots = []
 
     curveIndex = 0
+    cvIndex = 0
     for j in range(len(PrimitiveInfosList)):
         PrimitiveInfos = PrimitiveInfosList[j]
         posData = PositionsDataList[j]
+        widthData = WidthsDataList[j]
         for i, PrimitiveInfo in enumerate(PrimitiveInfos):
             offset = PrimitiveInfo[0]
             length = int(PrimitiveInfo[1])
             if length < 2:
                 continue
-            pointslist += posData[offset:offset + length].reshape(-1).tolist()
-            if needHairRootList:
-                hairRootlist.append(om.MPoint(posData[offset]))
+            # pointslist += posData[offset:offset + length].reshape(-1).tolist()
+            startAddr = offset * 3
+            for k in range(length):
+                pointArray[cvIndex].x = posData[startAddr]
+                pointArray[cvIndex].y = posData[startAddr + 1]
+                pointArray[cvIndex].z = posData[startAddr + 2]
+                if k == 0 and needHairRootList:
+                    hairRootlist.append(om.MPoint(pointArray[cvIndex]))
+                widthArray[cvIndex] = widthData[offset + k]
+                startAddr += 3
+                cvIndex += 1
             orders[curveIndex] = degree + 1
             nVertices[curveIndex] = length
 
@@ -246,9 +269,11 @@ def write_xgen(curveObj: abcGeom.OCurves, fnDepNode: om.MFnDependencyNode, needH
             curveIndex += 1
 
     samp.setCurvesNumVertices(nVertices)
-    samp.setPositions(floatList2V3fArray(pointslist))
+    # samp.setPositions(floatList2V3fArray(pointslist))
+    samp.setPositions(pointArray)
     samp.setKnots(list2ImathArray(knots, imath.FloatArray))
-    samp.setOrders(list2ImathArray(orders, imath.UnsignedCharArray))
+    # samp.setOrders(list2ImathArray(orders, imath.UnsignedCharArray))
+    samp.setOrders(orders)
 
     # back vertex color example
     # cvColor = abcGeom.OC3fGeomParam(cp, "groom_color", False, abcGeom.GeometryScope.kVertexScope, 1)
@@ -266,12 +291,12 @@ def write_xgen(curveObj: abcGeom.OCurves, fnDepNode: om.MFnDependencyNode, needH
     # cvColor.set(cvColorArray)
 
     # write width
-    # widths = list2ImathArray([0.1], imath.FloatArray)
-    # widths = abcGeom.OFloatGeomParamSample(widths, abcGeom.GeometryScope.kConstantScope)
-    # samp.setWidths(widths)
+    widths = abcGeom.OFloatGeomParamSample(widthArray, abcGeom.GeometryScope.kVertexScope)
+    samp.setWidths(widths)
     curveschema.set(samp)
     if needHairRootList:
         return hairRootlist
+
 
 
 def back_uv(curveObj: abcGeom.OCurves, hairRootList: list, bakeMesh: om.MFnMesh, uv_set: str = None):
