@@ -285,7 +285,7 @@ def write_xgen(curveObj: abcGeom.OCurves, fnDepNode: om.MFnDependencyNode, needH
     # samp.setOrders(list2ImathArray(orders, imath.UnsignedCharArray))
     samp.setOrders(orders)
 
-    # back vertex color example
+    # bake vertex color example
     # cvColor = abcGeom.OC3fGeomParam(cp, "groom_color", False, abcGeom.GeometryScope.kVertexScope, 1)
     # cvColorArray = imath.C3fArray(len(pointslist) // 3)
     # i = 0
@@ -310,7 +310,7 @@ def write_xgen(curveObj: abcGeom.OCurves, fnDepNode: om.MFnDependencyNode, needH
 
 
 
-def back_uv(curveObj: abcGeom.OCurves, hairRootList: list, bakeMesh: om.MFnMesh, uv_set: str = None):
+def bake_uv(curveObj: abcGeom.OCurves, hairRootList: list, bakeMesh: om.MFnMesh, uv_set: str = None):
     if bakeMesh is None:
         return
     if uv_set is None:
@@ -496,7 +496,8 @@ class SaveXGenWindow(QtWidgets.QDialog):
             # find mesh
             itDag.reset(fnDepNode.object(), om.MItDag.kDepthFirst, om.MFn.kMesh)
             while not itDag.isDone():
-                mesh = om.MFnMesh(itDag.currentItem())
+                meshPath = om.MDagPath.getAPathTo(itDag.currentItem())
+                mesh = om.MFnMesh(meshPath)
                 self.setBakeMesh(mesh)
                 break
 
@@ -531,7 +532,7 @@ class SaveXGenWindow(QtWidgets.QDialog):
                 rootList = write_curves(curveObj, fnDepNode, needBakeUV)
             write_group_and_guide(curveObj, item.groupName.text(), item.isGuide.isChecked())
             if needBakeUV:
-                back_uv(curveObj, rootList, self.bakeMesh, self.uvSetStr.text())
+                bake_uv(curveObj, rootList, self.bakeMesh, self.uvSetStr.text())
         print(f"Data has been saved in {file_path[0]} , it took {time.time() - startTime:.2f} seconds.")
         return file_path[0]
 
