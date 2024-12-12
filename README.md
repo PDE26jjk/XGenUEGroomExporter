@@ -12,3 +12,5 @@ Maya2025版本可用。[用法视频](https://www.bilibili.com/video/BV1U7mzYDEA
 有朋友指出有的版本没有numpy，请用noNumpy那个版本。
 
 XGen现在将写入宽度。
+
+新增py2版本，Maya2018可用。
