@@ -519,7 +519,10 @@ class SaveXGenWindow(QtWidgets.QDialog):
             startingDirectory=self.save_path,
             ff='Alembic Files (*.abc);;All Files (*)'
         )
-        self.save_path = file_path[0]
+        if file_path:
+            self.save_path = file_path[0]
+        else:
+            return
         startTime = time.time()
         archive = abc.OArchive(file_path[0])
         for item in self.contentList:
