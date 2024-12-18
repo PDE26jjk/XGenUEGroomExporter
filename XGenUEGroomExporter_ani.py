@@ -470,7 +470,7 @@ class SaveXGenWindow(QtWidgets.QDialog):
 
     def showAbout(self):
         QtWidgets.QMessageBox.about(self, "Export XGen to UE Groom",
-                                    "A small tool to export XGen to UE Groom, by PDE26jjk. link:  <a href='www.baidu.com'>www.baidu.com</a>")
+                                    "A small tool to export XGen to UE Groom, by PDE26jjk. link:  <a href='https://github.com/PDE26jjk/XGenUEGroomExporter'>https://github.com/PDE26jjk/XGenUEGroomExporter</a>")
 
     def buildUI(self):
         main_layout = QtWidgets.QVBoxLayout()
