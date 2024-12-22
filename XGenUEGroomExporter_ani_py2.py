@@ -1,4 +1,4 @@
-#%%
+# %%
 import alembic.Abc as abc
 import alembic.AbcGeom as abcGeom
 import alembic.AbcCoreAbstract as abcA
@@ -7,23 +7,25 @@ import maya.api.OpenMayaAnim as omAnim
 import maya.api.OpenMaya as om
 import imath
 import array
+import struct
 import zlib
 import json
 import maya.cmds as cmds
-from typing import List
 import time
-import struct
-#%%
+
+# %%
 print_debug = False
-#%%
-def list2ImathArray(l: list, _type):
+
+
+# %%
+def list2ImathArray(l, _type):
     arr = _type(len(l))
     for i in range(len(l)):
         arr[i] = l[i]
     return arr
 
 
-def floatList2V3fArray(l: list):
+def floatList2V3fArray(l):
     arr = imath.V3fArray(len(l) // 3)
     for i in range(len(arr)):
         arr[i].x = l[i * 3]
@@ -31,11 +33,12 @@ def floatList2V3fArray(l: list):
         arr[i].z = l[i * 3 + 2]
     return arr
 
-#%%
-def getXgenData(fnDepNode: om.MFnDependencyNode):
-    splineData: om.MPlug = fnDepNode.findPlug("outSplineData", False)
 
-    handle: om.MDataHandle = splineData.asMObject()
+# %%
+def getXgenData(fnDepNode):
+    splineData = fnDepNode.findPlug("outSplineData", False)
+
+    handle = splineData.asMObject()
     mdata = om.MFnPluginData(handle)
     mData = mdata.data()
 
@@ -47,8 +50,10 @@ def getXgenData(fnDepNode: om.MFnDependencyNode):
         blocks = []
         maxIt = 100
         while address < len(bype_data) - 1:
-            size = int.from_bytes(bype_data[address + 8:address + 16], byteorder='little', signed=False)
-            type_code = int.from_bytes(bype_data[address:address + 4], byteorder='little', signed=False)
+            # size = int.from_bytes(bype_data[address + 8:address + 16], byteorder='little', signed=False)
+            # type_code = int.from_bytes(bype_data[address:address + 4], byteorder='little', signed=False)
+            size = struct.unpack('<Q', bype_data[address + 8:address + 16])[0]
+            type_code = struct.unpack('<I', bype_data[address:address + 4])[0]
             blocks.append((address + 16, address + 16 + size, type_code))
             address += size + 16
             i += 1
@@ -60,7 +65,8 @@ def getXgenData(fnDepNode: om.MFnDependencyNode):
     headerBlock = dataBlocks[0]
     dataBlocks.pop(0)
 
-    dataJson = json.loads(rawData[headerBlock[0]:headerBlock[1]])
+    dataString = str(rawData[headerBlock[0]:headerBlock[1]])
+    dataJson = json.loads(dataString)
     # print(dataJson)
     Header = dataJson['Header']
 
@@ -68,7 +74,7 @@ def getXgenData(fnDepNode: om.MFnDependencyNode):
 
     def readItems(items):
         for k, v in items:
-            if isinstance(v, int):
+            if isinstance(v, (int, long)):
                 group = v >> 32
                 index = v & 0xFFFFFFFF
                 addr = (group, index)
@@ -90,7 +96,7 @@ def getXgenData(fnDepNode: om.MFnDependencyNode):
             if Header['GroupBase64']:
                 raise Exception("我还没有碰到Base64的情况，请提醒我更新代码")
             if Header['GroupDeflate']:
-                validData = zlib.decompress(rawData[dataBlocks[group][0] + 32:])
+                validData = zlib.decompress(str(rawData[dataBlocks[group][0] + 32:]))
             else:
                 validData = rawData[dataBlocks[group][0]:dataBlocks[group][1]]
             decompressedData[group] = validData
@@ -103,15 +109,15 @@ def getXgenData(fnDepNode: om.MFnDependencyNode):
     PositionsDataList = []
     WidthsDataList = []
     for k, v in Items.items():
-        # print(k, len(v))
+        # print(k,len(v))
         if k == 'PrimitiveInfos':
             dtype_format = '<IQ'
             for addr in v:
-                decompressed_data = decompressData(*addr)  # 假设解压缩返回字节流
+                decompressed_data = decompressData(*addr)
                 PrimitiveInfos = []
                 record_size = struct.calcsize(dtype_format)
                 for i in range(0, len(decompressed_data), record_size):
-                    PrimitiveInfo = struct.unpack_from(f'{dtype_format}', decompressed_data, i)
+                    PrimitiveInfo = struct.unpack_from(dtype_format, decompressed_data, i)
                     PrimitiveInfos.append(PrimitiveInfo)
 
                 PrimitiveInfosList.append(PrimitiveInfos)
@@ -122,6 +128,7 @@ def getXgenData(fnDepNode: om.MFnDependencyNode):
                 posData = array.array('f', decompressed_data)
 
                 PositionsDataList.append(posData)
+
         if k == 'WIDTH_CV':
             for addr in v:
                 decompressed_data = decompressData(*addr)
@@ -131,24 +138,24 @@ def getXgenData(fnDepNode: om.MFnDependencyNode):
     return PrimitiveInfosList, PositionsDataList, WidthsDataList
 
 
-#%%
-class CurvesProxy:
-    def __init__(self, curveObj: abcGeom.OCurves, fnDepNode: om.MFnDependencyNode, needBakeUV=False, animation=False):
+# %%
+class CurvesProxy(object):
+    def __init__(self, curveObj, fnDepNode, needBakeUV=False, animation=False):
         self.hairRootList = None
-        self.schema: abcGeom.OCurvesSchema = curveObj.getSchema()
+        self.schema = curveObj.getSchema()
         self.needBakeUV = needBakeUV
         self.animation = animation
         self.firstSamp = abcGeom.OCurvesSchemaSample()
         self.fnDepNode = fnDepNode
         self.curves = None
 
-    def write_group(self, group_name: str):
-        cp: abc.OCompoundProperty = self.schema.getArbGeomParams()
+    def write_group(self, group_name):
+        cp = self.schema.getArbGeomParams()
         groupName = abc.OStringArrayProperty(cp, "groom_group_name")
-        groupName.setValue(list2ImathArray([group_name], imath.StringArray))
+        groupName.setValue(list2ImathArray([str(group_name)], imath.StringArray))
 
     def write_is_guide(self, is_guide=True):
-        cp: abc.OCompoundProperty = self.schema.getArbGeomParams()
+        cp = self.schema.getArbGeomParams()
         if is_guide:
             guideFlag = abc.OInt16ArrayProperty(cp, "groom_guide")
             guideFlag.setValue(list2ImathArray([1], imath.ShortArray))
@@ -256,7 +263,7 @@ class CurvesProxy:
 
         self.schema.set(samp)
 
-    def back_uv(self, bakeMesh: om.MFnMesh, uv_set: str = None):
+    def back_uv(self, bakeMesh, uv_set=None):
         if self.hairRootList is None:
             return
         if bakeMesh is None:
@@ -264,7 +271,7 @@ class CurvesProxy:
         if uv_set is None:
             uv_set = bakeMesh.currentUVSetName()
         elif uv_set not in bakeMesh.getUVSetNames():
-            raise Exception(f'Invalid UV Set : {uv_set}')
+            raise Exception('Invalid UV Set : {}'.format(uv_set))
 
         uvs = imath.V2fArray(len(self.hairRootList))
         for i, hairRoot in enumerate(self.hairRootList):
@@ -272,14 +279,14 @@ class CurvesProxy:
             uvs[i].x = res[0]
             uvs[i].y = res[1]
 
-        cp: abc.OCompoundProperty = self.schema.getArbGeomParams()
+        cp = self.schema.getArbGeomParams()
         uv_prop = abc.OV2fArrayProperty(cp, "groom_root_uv")
         uv_prop.setValue(uvs)
 
 
 class XGenProxy(CurvesProxy):
-    def __init__(self, curveObj: abcGeom.OCurves, fnDepNode: om.MFnDependencyNode, needBakeUV=False, animation=False):
-        super().__init__(curveObj, fnDepNode, needBakeUV, animation)
+    def __init__(self, curveObj, fnDepNode, needBakeUV=False, animation=False):
+        super(XGenProxy, self).__init__(curveObj, fnDepNode, needBakeUV, animation)
 
     def write_first_frame(self):
         if print_debug:
@@ -297,7 +304,7 @@ class XGenProxy(CurvesProxy):
 
         orders = imath.UnsignedCharArray(numCurves)
         nVertices = imath.IntArray(numCurves)
-        cp: abc.OCompoundProperty = self.schema.getArbGeomParams()
+        cp = self.schema.getArbGeomParams()
 
         samp = self.firstSamp
         samp.setBasis(abcGeom.BasisType.kBsplineBasis)
@@ -313,6 +320,7 @@ class XGenProxy(CurvesProxy):
 
         curveIndex = 0
         cvIndex = 0
+
         for j in range(len(PrimitiveInfosList)):
             PrimitiveInfos = PrimitiveInfosList[j]
             posData = PositionsDataList[j]
@@ -337,8 +345,8 @@ class XGenProxy(CurvesProxy):
                 nVertices[curveIndex] = length
 
                 knotsInsideNum = length - degree + 1
-                knotsList = [*([0] * (degree - 1)), *list(range(knotsInsideNum)),
-                             *([knotsInsideNum - 1] * (degree - 1))]
+                # knotsList = [*([0] * (degree - 1)), *list(range(knotsInsideNum)), *([knotsInsideNum - 1] * (degree - 1))]
+                knotsList = [0] * (degree - 1) + list(range(knotsInsideNum)) + [knotsInsideNum - 1] * (degree - 1)
                 knots += knotsList
                 curveIndex += 1
 
@@ -381,7 +389,7 @@ class XGenProxy(CurvesProxy):
             for PrimitiveInfo in PrimitiveInfos:
                 numCVs += PrimitiveInfo[1]
 
-        cp: abc.OCompoundProperty = self.schema.getArbGeomParams()
+        cp = self.schema.getArbGeomParams()
 
         samp = abcGeom.OCurvesSchemaSample()
         samp.setBasis(self.firstSamp.getBasis())
@@ -421,8 +429,8 @@ class XGenProxy(CurvesProxy):
         if print_debug:
             print("write_frame: %.4f" % (time.time() - startTime))
 
-#%%
 
+# %%
 try:
     from PySide6 import QtCore, QtWidgets, QtGui
     import shiboken6 as shiboken
@@ -438,7 +446,7 @@ def mayaWindow():
     return shiboken.wrapInstance(int(main_window_ptr), QtWidgets.QWidget)
 
 
-#%%
+# %%
 class SaveXGenWindow(QtWidgets.QDialog):
     class Content:
         def __init__(self, fnDepNode, showName, Type, groupName, isGuide, bakeUV, animation):
@@ -467,7 +475,7 @@ class SaveXGenWindow(QtWidgets.QDialog):
 
     def __init__(self, parent=mayaWindow()):
         super(SaveXGenWindow, self).__init__(parent)
-        self.contentList: List[SaveXGenWindow.Content] = []
+        self.contentList = []
         self.save_path = '.'
         self.bakeMesh = None
         self.setWindowTitle("Export XGen to UE Groom")
@@ -500,7 +508,7 @@ class SaveXGenWindow(QtWidgets.QDialog):
         main_layout.addLayout(hBox)
 
         self.table = QtWidgets.QTableWidget(self)
-        self.table.setColumnCount(7)  # 设置列数
+        self.table.setColumnCount(7)
         self.table.setHorizontalHeaderLabels(["Name", "Type", "Group name", "Is guide", "Bake UV", "Animation", ""])
         self.table.horizontalHeader().setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeToContents)
         self.table.setColumnWidth(3, 140)
@@ -525,13 +533,14 @@ class SaveXGenWindow(QtWidgets.QDialog):
 
         self.table.clearContents()
         self.table.setRowCount(0)
+
         try:
             self.Bakeframe = om1ui.MQtUtil.findControl(
                 cmds.frameLayout(label='Bake UV', collapsable=True, collapse=True, manage=True))
-            self.Bakeframe: QtWidgets.QWidget = shiboken.wrapInstance(int(self.Bakeframe), QtWidgets.QWidget)
+            self.Bakeframe = shiboken.wrapInstance(int(self.Bakeframe), QtWidgets.QWidget)
             self.Bakeframe.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Maximum)
             # self.Bakeframe.setParent(self)
-            frameLayout: QtWidgets.QLayout = self.Bakeframe.children()[2].children()[0]
+            frameLayout = self.Bakeframe.children()[2].children()[0]
         except:
             self.Bakeframe = QtWidgets.QFrame(self)
             self.Bakeframe.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Maximum)
@@ -539,15 +548,16 @@ class SaveXGenWindow(QtWidgets.QDialog):
             self.Bakeframe.children().append(frameLayout)
 
         self.MeshName = QtWidgets.QLabel("Mesh : ---")
+
         hBox = QtWidgets.QHBoxLayout()
         hBox.setContentsMargins(10, 10, 10, 10)
         hBox.addWidget(self.MeshName)
         hBox2 = QtWidgets.QHBoxLayout()
         label = QtWidgets.QLabel("UV Set : ")
         hBox2.addWidget(label)
+
         self.combo = QtWidgets.QComboBox()
         self.combo.addItem("     ---     ")
-
         self.uvSetStr = QtWidgets.QLabel("Selected: None")
 
         self.combo.currentIndexChanged.connect(self.update_label)
@@ -570,9 +580,9 @@ class SaveXGenWindow(QtWidgets.QDialog):
         try:
             self.AnimationFrame = om1ui.MQtUtil.findControl(
                 cmds.frameLayout(label='Animation', collapsable=True, collapse=True, manage=True))
-            self.AnimationFrame: QtWidgets.QWidget = shiboken.wrapInstance(int(self.AnimationFrame), QtWidgets.QWidget)
+            self.AnimationFrame = shiboken.wrapInstance(int(self.AnimationFrame), QtWidgets.QWidget)
             self.AnimationFrame.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Maximum)
-            frameLayout: QtWidgets.QLayout = self.AnimationFrame.children()[2].children()[0]
+            frameLayout = self.AnimationFrame.children()[2].children()[0]
         except:
             self.AnimationFrame = QtWidgets.QFrame(self)
             self.AnimationFrame.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Maximum)
@@ -647,8 +657,8 @@ class SaveXGenWindow(QtWidgets.QDialog):
             return
         file_path = cmds.fileDialog2(
             dialogStyle=2,
-            caption="保存Alembic文件",
-            fileMode=0,  # 0: 保存文件
+            caption="Save as Alembic file",
+            fileMode=0,
             okCaption="save",
             # defaultExtension='abc',
             startingDirectory=self.save_path,
@@ -660,7 +670,7 @@ class SaveXGenWindow(QtWidgets.QDialog):
             return
         startTime = time.time()
         oldCurTime = omAnim.MAnimControl.currentTime()
-        archive = abc.OArchive(file_path[0])
+        archive = abc.OArchive(str(file_path[0]))
 
         frameRange = [int(self.startFrame.text()), int(self.endFrame.text())]
         if (frameRange[0] > frameRange[1]
@@ -676,7 +686,7 @@ class SaveXGenWindow(QtWidgets.QDialog):
 
         timeIndex = archive.addTimeSampling(timeSampling)
 
-        proxyList: List[CurvesProxy] = []
+        proxyList = []
         anyAnimation = False
         for item in self.contentList:
             fnDepNode = item.fnDepNode
@@ -684,9 +694,9 @@ class SaveXGenWindow(QtWidgets.QDialog):
             hasAnimation = item.animation.isChecked()
             if hasAnimation:
                 anyAnimation = True
-                curveObj = abcGeom.OCurves(archive.getTop(), fnDepNode.name(), timeIndex)
+                curveObj = abcGeom.OCurves(archive.getTop(), str(fnDepNode.name()), timeIndex)
             else:
-                curveObj = abcGeom.OCurves(archive.getTop(), fnDepNode.name())
+                curveObj = abcGeom.OCurves(archive.getTop(), str(fnDepNode.name()))
 
             if item.Type == SaveXGenWindow.xgenType:
                 proxy = XGenProxy(curveObj, fnDepNode, needBakeUV, hasAnimation)
@@ -701,9 +711,9 @@ class SaveXGenWindow(QtWidgets.QDialog):
         if anyAnimation:
             if self.preroll.isChecked():
                 for frame in range(frameRange[0]):
-                    om.MGlobal.viewFrame(frame)
+                    om1.MGlobal.viewFrame(frame)
             for frame in range(frameRange[0], frameRange[1] + 1):
-                om.MGlobal.viewFrame(frame)
+                om1.MGlobal.viewFrame(frame)
                 for item in proxyList:
                     if frame == frameRange[0]:
                         item.write_first_frame()
@@ -751,7 +761,7 @@ class SaveXGenWindow(QtWidgets.QDialog):
                 isCurve = True
                 break
             if isCurve:
-                groupNameStr: str = fnDepNode.name()
+                groupNameStr = fnDepNode.name()
                 suffix = "_guide"
                 if groupNameStr.endswith(suffix):
                     groupNameStr = groupNameStr[:-len(suffix)]
@@ -762,13 +772,12 @@ class SaveXGenWindow(QtWidgets.QDialog):
         self.table.setRowCount(len(contentList))
         for row in range(len(contentList)):
             item = QtWidgets.QTableWidgetItem(contentList[row].showName)
-            # item.setTextAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
             item.setFlags(QtCore.Qt.ItemFlag.ItemIsEnabled)  # 不可编辑
             self.table.setItem(row, 0, item)
 
             item = QtWidgets.QTableWidgetItem(contentList[row].Type)
             # item.setTextAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
-            item.setFlags(QtCore.Qt.ItemFlag.ItemIsEnabled)  # 不可编辑
+            item.setFlags(QtCore.Qt.ItemFlag.ItemIsEnabled)
             self.table.setItem(row, 1, item)
 
             self.table.setCellWidget(row, 2, contentList[row].groupName)
@@ -781,21 +790,20 @@ class SaveXGenWindow(QtWidgets.QDialog):
     def findBoundMesh(self, xgDes):
         itDg = om.MItDependencyGraph(xgDes.object(), direction=om.MItDependencyGraph.kUpstream)
         boundMesh = None
-        # itDg.resetTo(xgDes)
         while not itDg.isDone():
             dn = om.MFnDependencyNode(itDg.currentNode())
             if dn.typeName == 'xgmSplineBase':
-                boundMeshPlug: om.MPlug = dn.findPlug('boundMesh', False)
+                boundMeshPlug = dn.findPlug('boundMesh', False)
                 boundMesh = om.MFnMesh(
                     om.MDagPath.getAPathTo(boundMeshPlug.elementByLogicalIndex(0).source().node()))
                 break
             itDg.next()
         return boundMesh
 
-    def setBakeMesh(self, mesh: om.MFnMesh):
+    def setBakeMesh(self, mesh):
         if mesh is not None:
             self.bakeMesh = mesh
-            self.MeshName.setText(f"Mesh: {mesh.name()}")
+            self.MeshName.setText("Mesh: {}".format(mesh.name()))
             self.combo.clear()
             self.combo.addItems(mesh.getUVSetNames())
 

@@ -353,10 +353,13 @@ class SaveXGenWindow(QtWidgets.QDialog):
     xgenType = "xgen"
     instance = None
 
-    def getInstance(self):
-        if self.instance is None:
-            self.instance = SaveXGenWindow()
-        return self.instance
+    @staticmethod
+    def getInstance():
+        if SaveXGenWindow.instance is None:
+            SaveXGenWindow.instance = SaveXGenWindow()
+        return SaveXGenWindow.instance
+
+
 
     def __init__(self, parent=mayaWindow()):
         super(SaveXGenWindow, self).__init__(parent)
@@ -608,7 +611,7 @@ class SaveXGenWindow(QtWidgets.QDialog):
 
 # %%
 
-SaveXGenWindow().getInstance().show()
+SaveXGenWindow.getInstance().show()
 # %%
 
 

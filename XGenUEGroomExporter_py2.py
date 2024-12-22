@@ -68,7 +68,7 @@ def getXgenData(fnDepNode):
 
     def readItems(items):
         for k, v in items:
-            if isinstance(v, int):
+            if isinstance(v, (int, long)):
                 group = v >> 32
                 index = v & 0xFFFFFFFF
                 addr = (group, index)
@@ -112,14 +112,12 @@ def getXgenData(fnDepNode):
                 for i in range(0, len(decompressed_data), record_size):
                     PrimitiveInfo = struct.unpack_from(dtype_format, decompressed_data, i)
                     PrimitiveInfos.append(PrimitiveInfo)
-
                 PrimitiveInfosList.append(PrimitiveInfos)
 
         if k == 'Positions':
             for addr in v:
                 decompressed_data = decompressData(*addr)
                 posData = array.array('f', decompressed_data)
-
                 PositionsDataList.append(posData)
 
         if k == 'WIDTH_CV':
@@ -359,15 +357,16 @@ class SaveXGenWindow(QtWidgets.QDialog):
     xgenType = "xgen"
     instance = None
 
-    def getInstance(self):
-        if self.instance is None:
-            self.instance = SaveXGenWindow()
-        return self.instance
+    @staticmethod
+    def getInstance():
+        if SaveXGenWindow.instance is None:
+            SaveXGenWindow.instance = SaveXGenWindow()
+        return SaveXGenWindow.instance
 
     def __init__(self, parent=mayaWindow()):
         super(SaveXGenWindow, self).__init__(parent)
         self.contentList = []
-        self.save_path = '..'
+        self.save_path = '.'
         self.setWindowTitle("Export XGen to UE Groom")
         self.setGeometry(400, 400, 800, 400)
         self.buildUI()
@@ -501,14 +500,13 @@ class SaveXGenWindow(QtWidgets.QDialog):
         self.uvSetStr.setText(selected_option)
 
     def save_abc(self):
-        """打开保存文件对话框"""
         if len(self.contentList) == 0:
             print("No content")
             return
         file_path = cmds.fileDialog2(
             dialogStyle=2,
-            caption="保存Alembic文件",
-            fileMode=0,  # 0: 保存文件
+            caption="Save as Alembic file",
+            fileMode=0,
             okCaption="save",
             # defaultExtension='abc',
             startingDirectory=self.save_path,
@@ -614,5 +612,5 @@ class SaveXGenWindow(QtWidgets.QDialog):
 
 # %%
 
-SaveXGenWindow().getInstance().show()
+SaveXGenWindow.getInstance().show()
 # %%
