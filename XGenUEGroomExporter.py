@@ -1,4 +1,4 @@
-#%%
+# %%
 import alembic.Abc as abc
 import alembic.AbcGeom as abcGeom
 import alembic.AbcCoreAbstract as abcA
@@ -13,9 +13,12 @@ import maya.cmds as cmds
 from typing import List
 import time
 import struct
-#%%
+
+# %%
 print_debug = False
-#%%
+
+
+# %%
 def list2ImathArray(l: list, _type):
     arr = _type(len(l))
     for i in range(len(l)):
@@ -31,7 +34,8 @@ def floatList2V3fArray(l: list):
         arr[i].z = l[i * 3 + 2]
     return arr
 
-#%%
+
+# %%
 def getXgenData(fnDepNode: om.MFnDependencyNode):
     splineData: om.MPlug = fnDepNode.findPlug("outSplineData", False)
 
@@ -122,6 +126,7 @@ def getXgenData(fnDepNode: om.MFnDependencyNode):
                 posData = array.array('f', decompressed_data)
 
                 PositionsDataList.append(posData)
+
         if k == 'WIDTH_CV':
             for addr in v:
                 decompressed_data = decompressData(*addr)
@@ -131,7 +136,7 @@ def getXgenData(fnDepNode: om.MFnDependencyNode):
     return PrimitiveInfosList, PositionsDataList, WidthsDataList
 
 
-#%%
+# %%
 class CurvesProxy:
     def __init__(self, curveObj: abcGeom.OCurves, fnDepNode: om.MFnDependencyNode, needBakeUV=False, animation=False):
         self.hairRootList = None
@@ -141,17 +146,24 @@ class CurvesProxy:
         self.firstSamp = abcGeom.OCurvesSchemaSample()
         self.fnDepNode = fnDepNode
         self.curves = None
+        self.groupName = None
 
-    def write_group(self, group_name: str):
+    def write_group_name(self, group_name: str):
         cp: abc.OCompoundProperty = self.schema.getArbGeomParams()
         groupName = abc.OStringArrayProperty(cp, "groom_group_name")
         groupName.setValue(list2ImathArray([group_name], imath.StringArray))
+        self.groupName = group_name
 
     def write_is_guide(self, is_guide=True):
         cp: abc.OCompoundProperty = self.schema.getArbGeomParams()
         if is_guide:
             guideFlag = abc.OInt16ArrayProperty(cp, "groom_guide")
             guideFlag.setValue(list2ImathArray([1], imath.ShortArray))
+
+    def write_group_id(self, group_id: int):
+        cp: abc.OCompoundProperty = self.schema.getArbGeomParams()
+        _id = abc.OInt32ArrayProperty(cp, "groom_group_id")
+        _id.setValue(list2ImathArray([group_id], imath.IntArray))
 
     def write_first_frame(self):
         itDag = om.MItDag()
@@ -313,6 +325,7 @@ class XGenProxy(CurvesProxy):
 
         curveIndex = 0
         cvIndex = 0
+
         for j in range(len(PrimitiveInfosList)):
             PrimitiveInfos = PrimitiveInfosList[j]
             posData = PositionsDataList[j]
@@ -371,9 +384,9 @@ class XGenProxy(CurvesProxy):
             print("write_first_frame: %.4f" % (time.time() - startTime))
 
     def write_frame(self):
-        PrimitiveInfosList, PositionsDataList, WidthsDataList = getXgenData(self.fnDepNode)
         if print_debug:
             startTime = time.time()
+        PrimitiveInfosList, PositionsDataList, WidthsDataList = getXgenData(self.fnDepNode)
         numCurves = 0
         numCVs = 0
         for i, PrimitiveInfos in enumerate(PrimitiveInfosList):
@@ -421,7 +434,8 @@ class XGenProxy(CurvesProxy):
         if print_debug:
             print("write_frame: %.4f" % (time.time() - startTime))
 
-#%%
+
+# %%
 
 try:
     from PySide6 import QtCore, QtWidgets, QtGui
@@ -438,10 +452,10 @@ def mayaWindow():
     return shiboken.wrapInstance(int(main_window_ptr), QtWidgets.QWidget)
 
 
-#%%
+# %%
 class SaveXGenWindow(QtWidgets.QDialog):
     class Content:
-        def __init__(self, fnDepNode, showName, Type, groupName, isGuide, bakeUV, animation):
+        def __init__(self, fnDepNode, showName, Type, groupName, isGuide, bakeUV, animation, export):
             self.showName = showName
             self.fnDepNode = fnDepNode
             self.Type = Type
@@ -453,17 +467,11 @@ class SaveXGenWindow(QtWidgets.QDialog):
             self.bakeUV.setChecked(bakeUV)
             self.animation = QtWidgets.QCheckBox()
             self.animation.setChecked(animation)
+            self.export = QtWidgets.QCheckBox()
+            self.export.setChecked(export)
 
     curveType = "curve"
     xgenType = "xgen"
-    instance = None
-
-    @staticmethod
-    def getInstance():
-        if SaveXGenWindow.instance is None:
-            SaveXGenWindow.instance = SaveXGenWindow()
-        return SaveXGenWindow.instance
-
 
     def __init__(self, parent=mayaWindow()):
         super(SaveXGenWindow, self).__init__(parent)
@@ -471,12 +479,26 @@ class SaveXGenWindow(QtWidgets.QDialog):
         self.save_path = '.'
         self.bakeMesh = None
         self.setWindowTitle("Export XGen to UE Groom")
-        self.setGeometry(400, 400, 850, 400)
+        self.setGeometry(400, 400, 850, 450)
         self.buildUI()
 
     def showAbout(self):
         QtWidgets.QMessageBox.about(self, "Export XGen to UE Groom",
-                                    "A small tool to export XGen to UE Groom, by PDE26jjk.<br> link:  <a href='https://github.com/PDE26jjk/XGenUEGroomExporter'>https://github.com/PDE26jjk/XGenUEGroomExporter</a>")
+                                    "A small tool to export XGen to UE Groom, by PDE26jjk. Link:  <a href='https://github.com/PDE26jjk/XGenUEGroomExporter'>https://github.com/PDE26jjk/XGenUEGroomExporter</a>")
+
+    def createFrame(self, labelText):
+        try:
+            frame = om1ui.MQtUtil.findControl(
+                cmds.frameLayout(label=labelText, collapsable=True, collapse=True, manage=True))
+            frame: QtWidgets.QWidget = shiboken.wrapInstance(int(frame), QtWidgets.QWidget)
+            frame.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Maximum)
+            frameLayout: QtWidgets.QLayout = frame.children()[2].children()[0]
+        except:
+            frame = QtWidgets.QFrame(self)
+            frame.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Maximum)
+            frameLayout = QtWidgets.QVBoxLayout(frame)
+            frame.children().append(frameLayout)
+        return frame, frameLayout
 
     def buildUI(self):
         main_layout = QtWidgets.QVBoxLayout()
@@ -500,15 +522,17 @@ class SaveXGenWindow(QtWidgets.QDialog):
         main_layout.addLayout(hBox)
 
         self.table = QtWidgets.QTableWidget(self)
-        self.table.setColumnCount(7)  # 设置列数
-        self.table.setHorizontalHeaderLabels(["Name", "Type", "Group name", "Is guide", "Bake UV", "Animation", ""])
-        self.table.horizontalHeader().setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeToContents)
-        self.table.setColumnWidth(3, 140)
-        self.table.horizontalHeader().setSectionResizeMode(3, QtWidgets.QHeaderView.Fixed)
+        self.table.setColumnCount(8)  # 设置列数
+        self.table.setHorizontalHeaderLabels(["", "Name", "Type", "Group name", "Is guide", "Bake UV", "Animation", ""])
+        self.table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.Fixed)
+        self.table.setColumnWidth(0, 40)
+        self.table.horizontalHeader().setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeToContents)
         self.table.setColumnWidth(4, 140)
         self.table.horizontalHeader().setSectionResizeMode(4, QtWidgets.QHeaderView.Fixed)
         self.table.setColumnWidth(5, 140)
         self.table.horizontalHeader().setSectionResizeMode(5, QtWidgets.QHeaderView.Fixed)
+        self.table.setColumnWidth(6, 140)
+        self.table.horizontalHeader().setSectionResizeMode(6, QtWidgets.QHeaderView.Fixed)
         self.table.horizontalHeader().setStretchLastSection(True)
 
         self.table.setStyleSheet("""
@@ -525,18 +549,8 @@ class SaveXGenWindow(QtWidgets.QDialog):
 
         self.table.clearContents()
         self.table.setRowCount(0)
-        try:
-            self.Bakeframe = om1ui.MQtUtil.findControl(
-                cmds.frameLayout(label='Bake UV', collapsable=True, collapse=True, manage=True))
-            self.Bakeframe: QtWidgets.QWidget = shiboken.wrapInstance(int(self.Bakeframe), QtWidgets.QWidget)
-            self.Bakeframe.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Maximum)
-            # self.Bakeframe.setParent(self)
-            frameLayout: QtWidgets.QLayout = self.Bakeframe.children()[2].children()[0]
-        except:
-            self.Bakeframe = QtWidgets.QFrame(self)
-            self.Bakeframe.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Maximum)
-            frameLayout = QtWidgets.QVBoxLayout(self.Bakeframe)
-            self.Bakeframe.children().append(frameLayout)
+
+        self.Bakeframe, frameLayout = self.createFrame(labelText="Bake UV")
 
         self.MeshName = QtWidgets.QLabel("Mesh : ---")
         hBox = QtWidgets.QHBoxLayout()
@@ -567,17 +581,7 @@ class SaveXGenWindow(QtWidgets.QDialog):
         self.separator.setFrameShape(QtWidgets.QFrame.HLine)
         self.separator.setFrameShadow(QtWidgets.QFrame.Sunken)
 
-        try:
-            self.AnimationFrame = om1ui.MQtUtil.findControl(
-                cmds.frameLayout(label='Animation', collapsable=True, collapse=True, manage=True))
-            self.AnimationFrame: QtWidgets.QWidget = shiboken.wrapInstance(int(self.AnimationFrame), QtWidgets.QWidget)
-            self.AnimationFrame.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Maximum)
-            frameLayout: QtWidgets.QLayout = self.AnimationFrame.children()[2].children()[0]
-        except:
-            self.AnimationFrame = QtWidgets.QFrame(self)
-            self.AnimationFrame.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Maximum)
-            frameLayout = QtWidgets.QVBoxLayout(self.AnimationFrame)
-            self.AnimationFrame.children().append(frameLayout)
+        self.AnimationFrame, frameLayout = self.createFrame(labelText="Animation")
 
         validator = QtGui.QIntValidator()
         validator.setRange(0, 99999)
@@ -605,6 +609,16 @@ class SaveXGenWindow(QtWidgets.QDialog):
         frameLayout.addLayout(hBox)
         frameLayout.addLayout(hBox2)
 
+        self.SettingFrame, frameLayout = self.createFrame(labelText="Setting")
+
+        frameLayout.setContentsMargins(10, 10, 10, 10)
+        hBox = QtWidgets.QHBoxLayout()
+        self.createGroupId_cb = QtWidgets.QCheckBox("Create group id")
+        self.createGroupId_cb.setChecked(True)
+        hBox.addWidget(self.createGroupId_cb)
+
+        frameLayout.addLayout(hBox)
+
         self.save_button = QtWidgets.QPushButton("Save Alembic File", self)
         self.save_button.clicked.connect(self.save_abc)
 
@@ -618,6 +632,7 @@ class SaveXGenWindow(QtWidgets.QDialog):
         main_layout.addWidget(self.table)
         main_layout.addWidget(self.Bakeframe)
         main_layout.addWidget(self.AnimationFrame)
+        main_layout.addWidget(self.SettingFrame)
         main_layout.addWidget(self.separator)
         main_layout.addLayout(button_layout)
 
@@ -646,9 +661,9 @@ class SaveXGenWindow(QtWidgets.QDialog):
             print("No content")
             return
         file_path = cmds.fileDialog2(
-            dialogStyle=2,
-            caption="保存Alembic文件",
-            fileMode=0,  # 0: 保存文件
+            # dialogStyle=2,
+            caption="Save as Alembic File",
+            fileMode=0,
             okCaption="save",
             # defaultExtension='abc',
             startingDirectory=self.save_path,
@@ -662,28 +677,35 @@ class SaveXGenWindow(QtWidgets.QDialog):
         oldCurTime = omAnim.MAnimControl.currentTime()
         archive = abc.OArchive(file_path[0])
 
-        frameRange = [int(self.startFrame.text()), int(self.endFrame.text())]
-        if (frameRange[0] > frameRange[1]
-                or frameRange[0] < omAnim.MAnimControl.minTime().value
-                or frameRange[1] > omAnim.MAnimControl.maxTime().value):
-            raise ValueError("Frame out of range.")
-        # frameRange[0] = int(max(frameRange[0], omAnim.MAnimControl.minTime().value))
-        # frameRange[1] = int(min(frameRange[1], omAnim.MAnimControl.maxTime().value))
-
-        sec = om.MTime(1, om.MTime.kSeconds)
-        spf = 1.0 / sec.asUnits(om.MTime.uiUnit())
-        timeSampling = abcA.TimeSampling(spf, spf * frameRange[0])
-
-        timeIndex = archive.addTimeSampling(timeSampling)
-
-        proxyList: List[CurvesProxy] = []
         anyAnimation = False
         for item in self.contentList:
+            hasAnimation = item.animation.isChecked()
+            if hasAnimation:
+                anyAnimation = True
+                return
+        if anyAnimation:
+            frameRange = [int(self.startFrame.text()), int(self.endFrame.text())]
+            if (frameRange[0] > frameRange[1]
+                    or frameRange[0] < omAnim.MAnimControl.minTime().value
+                    or frameRange[1] > omAnim.MAnimControl.maxTime().value):
+                raise ValueError("Frame out of range.")
+            # frameRange[0] = int(max(frameRange[0], omAnim.MAnimControl.minTime().value))
+            # frameRange[1] = int(min(frameRange[1], omAnim.MAnimControl.maxTime().value))
+
+            sec = om.MTime(1, om.MTime.kSeconds)
+            spf = 1.0 / sec.asUnits(om.MTime.uiUnit())
+            timeSampling = abcA.TimeSampling(spf, spf * frameRange[0])
+
+            timeIndex = archive.addTimeSampling(timeSampling)
+
+        proxyList: List[CurvesProxy] = []
+        for item in self.contentList:
+            if not item.export:
+                continue
             fnDepNode = item.fnDepNode
             needBakeUV = item.bakeUV.isChecked()
             hasAnimation = item.animation.isChecked()
             if hasAnimation:
-                anyAnimation = True
                 curveObj = abcGeom.OCurves(archive.getTop(), fnDepNode.name(), timeIndex)
             else:
                 curveObj = abcGeom.OCurves(archive.getTop(), fnDepNode.name())
@@ -695,12 +717,25 @@ class SaveXGenWindow(QtWidgets.QDialog):
             else:
                 continue
             proxyList.append(proxy)
-            proxy.write_group(item.groupName.text())
+            proxy.write_group_name(item.groupName.text())
             proxy.write_is_guide(item.isGuide.isChecked())
+
+        if len(proxyList) == 0:
+            print("No content")
+            return
+
+        if self.createGroupId_cb.isChecked():
+            groupIds = dict()
+            currentId = 0
+            for proxy in proxyList:
+                if proxy.groupName not in groupIds:
+                    groupIds[proxy.groupName] = currentId
+                    currentId += 1
+                proxy.write_group_id(groupIds[proxy.groupName])
 
         if anyAnimation:
             if self.preroll.isChecked():
-                for frame in range(frameRange[0]):
+                for frame in range(int(omAnim.MAnimControl.minTime().value), frameRange[0]):
                     om.MGlobal.viewFrame(frame)
             for frame in range(frameRange[0], frameRange[1] + 1):
                 om.MGlobal.viewFrame(frame)
@@ -739,7 +774,7 @@ class SaveXGenWindow(QtWidgets.QDialog):
             if xgDes is not None:
                 contentList.append(
                     SaveXGenWindow.Content(xgDes, fnDepNode.name(), SaveXGenWindow.xgenType, fnDepNode.name(), False,
-                                           False, False))
+                                           False, False, True))
                 boundMesh = self.findBoundMesh(xgDes)
                 if boundMesh is not None:
                     self.setBakeMesh(boundMesh)
@@ -757,31 +792,32 @@ class SaveXGenWindow(QtWidgets.QDialog):
                     groupNameStr = groupNameStr[:-len(suffix)]
                 contentList.append(
                     SaveXGenWindow.Content(fnDepNode, fnDepNode.name(), SaveXGenWindow.curveType, groupNameStr, True,
-                                           False, False))
+                                           False, False, True))
 
         self.table.setRowCount(len(contentList))
         for row in range(len(contentList)):
+            self.table.setCellWidget(row, 0, contentList[row].export)
+            contentList[row].export.setStyleSheet("padding-left:8px")
             item = QtWidgets.QTableWidgetItem(contentList[row].showName)
             # item.setTextAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
-            item.setFlags(QtCore.Qt.ItemFlag.ItemIsEnabled)  # 不可编辑
-            self.table.setItem(row, 0, item)
+            item.setFlags(QtCore.Qt.ItemFlag.ItemIsEnabled)
+            self.table.setItem(row, 1, item)
 
             item = QtWidgets.QTableWidgetItem(contentList[row].Type)
             # item.setTextAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
-            item.setFlags(QtCore.Qt.ItemFlag.ItemIsEnabled)  # 不可编辑
-            self.table.setItem(row, 1, item)
+            item.setFlags(QtCore.Qt.ItemFlag.ItemIsEnabled)
+            self.table.setItem(row, 2, item)
 
-            self.table.setCellWidget(row, 2, contentList[row].groupName)
-            self.table.setCellWidget(row, 3, contentList[row].isGuide)
-            self.table.setCellWidget(row, 4, contentList[row].bakeUV)
-            self.table.setCellWidget(row, 5, contentList[row].animation)
+            self.table.setCellWidget(row, 3, contentList[row].groupName)
+            self.table.setCellWidget(row, 4, contentList[row].isGuide)
+            self.table.setCellWidget(row, 5, contentList[row].bakeUV)
+            self.table.setCellWidget(row, 6, contentList[row].animation)
 
         self.contentList = contentList
 
     def findBoundMesh(self, xgDes):
         itDg = om.MItDependencyGraph(xgDes.object(), direction=om.MItDependencyGraph.kUpstream)
         boundMesh = None
-        # itDg.resetTo(xgDes)
         while not itDg.isDone():
             dn = om.MFnDependencyNode(itDg.currentNode())
             if dn.typeName == 'xgmSplineBase':
@@ -800,4 +836,7 @@ class SaveXGenWindow(QtWidgets.QDialog):
             self.combo.addItems(mesh.getUVSetNames())
 
 
-SaveXGenWindow.getInstance().show()
+SaveXGenWindowInstanceName = '_SaveXGenWindowInstance'
+if SaveXGenWindowInstanceName not in globals():
+    globals()[SaveXGenWindowInstanceName] = SaveXGenWindow()
+globals()[SaveXGenWindowInstanceName].show()

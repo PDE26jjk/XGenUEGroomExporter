@@ -1,10 +1,11 @@
 # %%
 import alembic.Abc as abc
 import alembic.AbcGeom as abcGeom
+import alembic.AbcCoreAbstract as abcA
 import maya.OpenMaya as om1
+import maya.api.OpenMayaAnim as omAnim
 import maya.api.OpenMaya as om
 import imath
-import ctypes
 import array
 import struct
 import zlib
@@ -12,7 +13,11 @@ import json
 import maya.cmds as cmds
 import time
 
-#%%
+# %%
+print_debug = False
+
+
+# %%
 def list2ImathArray(l, _type):
     arr = _type(len(l))
     for i in range(len(l)):
@@ -28,7 +33,8 @@ def floatList2V3fArray(l):
         arr[i].z = l[i * 3 + 2]
     return arr
 
-#%%
+
+# %%
 def getXgenData(fnDepNode):
     splineData = fnDepNode.findPlug("outSplineData", False)
 
@@ -103,21 +109,24 @@ def getXgenData(fnDepNode):
     PositionsDataList = []
     WidthsDataList = []
     for k, v in Items.items():
+        # print(k,len(v))
         if k == 'PrimitiveInfos':
             dtype_format = '<IQ'
             for addr in v:
-                decompressed_data = decompressData(*addr)  # 假设解压缩返回字节流
+                decompressed_data = decompressData(*addr)
                 PrimitiveInfos = []
                 record_size = struct.calcsize(dtype_format)
                 for i in range(0, len(decompressed_data), record_size):
                     PrimitiveInfo = struct.unpack_from(dtype_format, decompressed_data, i)
                     PrimitiveInfos.append(PrimitiveInfo)
+
                 PrimitiveInfosList.append(PrimitiveInfos)
 
         if k == 'Positions':
             for addr in v:
                 decompressed_data = decompressData(*addr)
                 posData = array.array('f', decompressed_data)
+
                 PositionsDataList.append(posData)
 
         if k == 'WIDTH_CV':
@@ -128,208 +137,312 @@ def getXgenData(fnDepNode):
 
     return PrimitiveInfosList, PositionsDataList, WidthsDataList
 
-#%%
-def write_group_and_guide(curveObj, group_name, is_guide):
-    curveschema = curveObj.getSchema()
-    cp = curveschema.getArbGeomParams()
-    groupName = abc.OStringArrayProperty(cp, "groom_group_name")
-    groupName.setValue(list2ImathArray([str(group_name)], imath.StringArray))
-    if is_guide:
-        guideFlag = abc.OInt16ArrayProperty(cp, "groom_guide")
-        guideFlag.setValue(list2ImathArray([1], imath.ShortArray))
+
+# %%
+class CurvesProxy(object):
+    def __init__(self, curveObj, fnDepNode, needBakeUV=False, animation=False):
+        self.hairRootList = None
+        self.schema = curveObj.getSchema()
+        self.needBakeUV = needBakeUV
+        self.animation = animation
+        self.firstSamp = abcGeom.OCurvesSchemaSample()
+        self.fnDepNode = fnDepNode
+        self.curves = None
+        self.groupName = None
+
+    def write_group_name(self, group_name):
+        cp = self.schema.getArbGeomParams()
+        groupName = abc.OStringArrayProperty(cp, "groom_group_name")
+        groupName.setValue(list2ImathArray([str(group_name)], imath.StringArray))
+        self.groupName = group_name
+
+    def write_is_guide(self, is_guide=True):
+        cp = self.schema.getArbGeomParams()
+        if is_guide:
+            guideFlag = abc.OInt16ArrayProperty(cp, "groom_guide")
+            guideFlag.setValue(list2ImathArray([1], imath.ShortArray))
+
+    def write_group_id(self, group_id):
+        cp = self.schema.getArbGeomParams()
+        _id = abc.OInt32ArrayProperty(cp, "groom_group_id")
+        _id.setValue(list2ImathArray([group_id], imath.IntArray))
+
+    def write_first_frame(self):
+        itDag = om.MItDag()
+        itDag.reset(self.fnDepNode.object(), om.MItDag.kDepthFirst, om.MFn.kCurve)
+        curves = []
+        while not itDag.isDone():
+            curve_node = itDag.currentItem()
+            curves.append(curve_node)
+            itDag.next()
+        self.curves = curves
+
+        numCurves = len(self.curves)
+        if numCurves == 0:
+            return
+
+        curve = om.MFnNurbsCurve(self.curves[0])
+
+        orders = imath.IntArray(numCurves)
+        nVertices = imath.IntArray(numCurves)
+        pointslist = []
+        knots = []
+        if self.needBakeUV:
+            self.hairRootList = []
+
+        samp = self.firstSamp
+        samp.setBasis(abcGeom.BasisType.kBsplineBasis)
+        samp.setWrap(abcGeom.CurvePeriodicity.kNonPeriodic)
+
+        if curve.degree == 3:
+            samp.setType(abcGeom.CurveType.kCubic)
+        elif curve.degree == 1:
+            samp.setType(abcGeom.CurveType.kLinear)
+        else:
+            # samp.setType(abcGeom.CurveType.kVariableOrder)
+            samp.setType(abcGeom.CurveType.kLinear)
+            pass
+        for i in range(numCurves):
+            curve = curve.setObject(self.curves[i])
+            numCVs = curve.numCVs
+            orders[i] = curve.degree + 1
+            nVertices[i] = numCVs
+            cvArray = curve.cvPositions()
+            for j in range(numCVs):
+                pointslist.append(cvArray[j].x)
+                pointslist.append(cvArray[j].y)
+                pointslist.append(cvArray[j].z)
+            if self.needBakeUV:
+                self.hairRootList.append(cvArray[0])
+            knotsArray = curve.knots()
+            if len(knotsArray) > 1:
+                knotsLength = len(knotsArray)
+                if (knotsArray[0] == knotsArray[knotsLength - 1] or
+                        knotsArray[0] == knotsArray[1]):
+                    knots.append(float(knotsArray[0]))
+                else:
+                    knots.append(float(2 * knotsArray[0] - knotsArray[1]))
+
+                for j in range(knotsLength):
+                    knots.append(float(knotsArray[j]))
+
+                if (knotsArray[0] == knotsArray[knotsLength - 1] or
+                        knotsArray[knotsLength - 1] == knotsArray[knotsLength - 2]):
+                    knots.append(float(knotsArray[knotsLength - 1]))
+                else:
+                    knots.append(float(2 * knotsArray[knotsLength - 1] - knotsArray[knotsLength - 2]))
+        samp.setCurvesNumVertices(nVertices)
+        samp.setPositions(floatList2V3fArray(pointslist))
+        samp.setOrders(list2ImathArray(orders, imath.UnsignedCharArray))
+        samp.setKnots(list2ImathArray(knots, imath.FloatArray))
+
+        # widths = list2ImathArray([0.1], imath.FloatArray)
+        # widths = abc.Float32TPTraits()
+        # widths = abcGeom.OFloatGeomParamSample(widths, abcGeom.GeometryScope.kConstantScope)
+        # samp.setWidths(widths)
+        self.schema.set(samp)
+
+    def write_frame(self):
+        numCurves = len(self.curves)
+        if numCurves == 0:
+            return
+        curve = om.MFnNurbsCurve(self.curves[0])
+
+        samp = abcGeom.OCurvesSchemaSample()
+        samp.setBasis(self.firstSamp.getBasis())
+        samp.setWrap(self.firstSamp.getWrap())
+        samp.setType(self.firstSamp.getType())
+        samp.setCurvesNumVertices(self.firstSamp.getCurvesNumVertices())
+        samp.setOrders(self.firstSamp.getOrders())
+        samp.setKnots(self.firstSamp.getKnots())
+
+        pointslist = []
+        for i in range(numCurves):
+            curve = curve.setObject(self.curves[i])
+            numCVs = curve.numCVs
+            cvArray = curve.cvPositions()
+            for j in range(numCVs):
+                pointslist.append(cvArray[j].x)
+                pointslist.append(cvArray[j].y)
+                pointslist.append(cvArray[j].z)
+
+        samp.setPositions(floatList2V3fArray(pointslist))
+
+        self.schema.set(samp)
+
+    def back_uv(self, bakeMesh, uv_set=None):
+        if self.hairRootList is None:
+            return
+        if bakeMesh is None:
+            return
+        if uv_set is None:
+            uv_set = bakeMesh.currentUVSetName()
+        elif uv_set not in bakeMesh.getUVSetNames():
+            raise Exception('Invalid UV Set : {}'.format(uv_set))
+
+        uvs = imath.V2fArray(len(self.hairRootList))
+        for i, hairRoot in enumerate(self.hairRootList):
+            res = bakeMesh.getUVAtPoint(hairRoot, om.MSpace.kWorld, uvSet=uv_set)
+            uvs[i].x = res[0]
+            uvs[i].y = res[1]
+
+        cp = self.schema.getArbGeomParams()
+        uv_prop = abc.OV2fArrayProperty(cp, "groom_root_uv")
+        uv_prop.setValue(uvs)
 
 
-def write_curves(curveObj, fnDepNode, needHairRootList=False):
-    itDag = om.MItDag()
-    # help(itDag.reset)
-    itDag.reset(fnDepNode.object(), om.MItDag.kDepthFirst, om.MFn.kCurve)
-    curves = []
-    while not itDag.isDone():
-        curve_node = itDag.currentItem()
-        curves.append(curve_node)
-        itDag.next()
-    if len(curves) == 0:
-        return None
-    curve = om.MFnNurbsCurve(curves[0])
-    curveschema = curveObj.getSchema()
-    cp = curveschema.getArbGeomParams()
+class XGenProxy(CurvesProxy):
+    def __init__(self, curveObj, fnDepNode, needBakeUV=False, animation=False):
+        super(XGenProxy, self).__init__(curveObj, fnDepNode, needBakeUV, animation)
 
-    numCurves = len(curves)
+    def write_first_frame(self):
+        if print_debug:
+            startTime = time.time()
+        PrimitiveInfosList, PositionsDataList, WidthsDataList = getXgenData(self.fnDepNode)
+        if print_debug:
+            print("getXgenData: %.4f" % (time.time() - startTime))
+            startTime = time.time()
+        numCurves = 0
+        numCVs = 0
+        for i, PrimitiveInfos in enumerate(PrimitiveInfosList):
+            numCurves += len(PrimitiveInfos)
+            for PrimitiveInfo in PrimitiveInfos:
+                numCVs += PrimitiveInfo[1]
 
-    orders = imath.IntArray(numCurves)
-    nVertices = imath.IntArray(numCurves)
-    pointslist = []
-    knots = []
-    hairRootlist = []
-    samp = abcGeom.OCurvesSchemaSample()
-    samp.setBasis(abcGeom.BasisType.kBsplineBasis)
-    samp.setWrap(abcGeom.CurvePeriodicity.kNonPeriodic)
+        orders = imath.UnsignedCharArray(numCurves)
+        nVertices = imath.IntArray(numCurves)
+        cp = self.schema.getArbGeomParams()
 
-    if curve.degree == 3:
+        samp = self.firstSamp
+        samp.setBasis(abcGeom.BasisType.kBsplineBasis)
+        samp.setWrap(abcGeom.CurvePeriodicity.kNonPeriodic)
         samp.setType(abcGeom.CurveType.kCubic)
-    elif curve.degree == 1:
-        samp.setType(abcGeom.CurveType.kLinear)
-    else:
-        # samp.setType(abcGeom.CurveType.kVariableOrder) # https://github.com/alembic/alembic/issues/458 After alembic fixing this bug, use this line.
-        samp.setType(abcGeom.CurveType.kLinear)
-        # samp.setType(abcGeom.CurveType.kCubic)
-        pass
-    for i in range(numCurves):
-        curve = curve.setObject(curves[i])
-        numCVs = curve.numCVs
-        orders[i] = curve.degree + 1
-        nVertices[i] = numCVs
-        cvArray = curve.cvPositions()
-        for j in range(numCVs):
-            pointslist.append(cvArray[j].x)
-            pointslist.append(cvArray[j].y)
-            pointslist.append(cvArray[j].z)
-        if needHairRootList:
-            hairRootlist.append(cvArray[0])
-        knotsArray = curve.knots()
-        if len(knotsArray) > 1:
-            knotsLength = len(knotsArray)
-            if (knotsArray[0] == knotsArray[knotsLength - 1] or
-                    knotsArray[0] == knotsArray[1]):
-                knots.append(float(knotsArray[0]))
-            else:
-                knots.append(float(2 * knotsArray[0] - knotsArray[1]))
 
-            for j in range(knotsLength):
-                knots.append(float(knotsArray[j]))
+        degree = 3
+        pointArray = imath.V3fArray(numCVs)
+        widthArray = imath.FloatArray(numCVs)
+        if self.needBakeUV:
+            self.hairRootList = []
+        knots = []
 
-            if (knotsArray[0] == knotsArray[knotsLength - 1] or
-                    knotsArray[knotsLength - 1] == knotsArray[knotsLength - 2]):
-                knots.append(float(knotsArray[knotsLength - 1]))
-            else:
-                knots.append(float(2 * knotsArray[knotsLength - 1] - knotsArray[knotsLength - 2]))
-    samp.setCurvesNumVertices(nVertices)
-    samp.setPositions(floatList2V3fArray(pointslist))
-    samp.setOrders(list2ImathArray(orders, imath.UnsignedCharArray))
-    samp.setKnots(list2ImathArray(knots, imath.FloatArray))
+        curveIndex = 0
+        cvIndex = 0
 
-    # widths = list2ImathArray([0.1], imath.FloatArray)
-    # widths = abc.Float32TPTraits()
-    # widths = abcGeom.OFloatGeomParamSample(widths, abcGeom.GeometryScope.kConstantScope)
-    # samp.setWidths(widths)
-    curveschema.set(samp)
-    if needHairRootList:
-        return hairRootlist
+        for j in range(len(PrimitiveInfosList)):
+            PrimitiveInfos = PrimitiveInfosList[j]
+            posData = PositionsDataList[j]
+            widthData = WidthsDataList[j]
+            for i, PrimitiveInfo in enumerate(PrimitiveInfos):
+                offset = PrimitiveInfo[0]
+                length = int(PrimitiveInfo[1])
+                if length < 2:
+                    continue
+                startAddr = offset * 3
+                for k in range(length):
+                    pointArray[cvIndex].x = posData[startAddr]
+                    pointArray[cvIndex].y = posData[startAddr + 1]
+                    pointArray[cvIndex].z = posData[startAddr + 2]
+                    if k == 0 and self.needBakeUV:
+                        self.hairRootList.append(om.MPoint(pointArray[cvIndex]))
+                    widthArray[cvIndex] = widthData[offset + k]
+                    startAddr += 3
+                    cvIndex += 1
 
+                orders[curveIndex] = degree + 1
+                nVertices[curveIndex] = length
 
-def write_xgen(curveObj, fnDepNode, needHairRootList=False):
-    PrimitiveInfosList, PositionsDataList, WidthsDataList = getXgenData(fnDepNode)
-    numCurves = 0
-    numCVs = 0
-    for i, PrimitiveInfos in enumerate(PrimitiveInfosList):
-        numCurves += len(PrimitiveInfos)
-        for PrimitiveInfo in PrimitiveInfos:
-            numCVs += PrimitiveInfo[1]
+                knotsInsideNum = length - degree + 1
+                # knotsList = [*([0] * (degree - 1)), *list(range(knotsInsideNum)), *([knotsInsideNum - 1] * (degree - 1))]
+                knotsList = [0] * (degree - 1) + list(range(knotsInsideNum)) + [knotsInsideNum - 1] * (degree - 1)
+                knots += knotsList
+                curveIndex += 1
 
-    orders = imath.UnsignedCharArray(numCurves)
-    nVertices = imath.IntArray(numCurves)
-    curveschema = curveObj.getSchema()
-    cp = curveschema.getArbGeomParams()
+        samp.setCurvesNumVertices(nVertices)
+        samp.setPositions(pointArray)
+        samp.setKnots(list2ImathArray(knots, imath.FloatArray))
+        samp.setOrders(orders)
 
-    samp = abcGeom.OCurvesSchemaSample()
-    samp.setBasis(abcGeom.BasisType.kBsplineBasis)
-    samp.setWrap(abcGeom.CurvePeriodicity.kNonPeriodic)
-    samp.setType(abcGeom.CurveType.kCubic)
+        # back vertex color example
+        # cvColor = abcGeom.OC3fGeomParam(cp, "groom_color", False, abcGeom.GeometryScope.kVertexScope, 1)
+        # cvColorArray = imath.C3fArray(len(pointslist) // 3)
+        # i = 0
+        # color1 = imath.Color3f((0, 1, 1));
+        # color2 = imath.Color3f((1, 0, 1))
+        # for _ in range(len(nVertices)):
+        #     length = nVertices[_]
+        #     for j in range(length):
+        #         t = (j / (length - 1))
+        #         cvColorArray[i] = color1 * (1 - t) + color2 * t
+        #         i += 1
+        # cvColorArray = abcGeom.OC3fGeomParamSample(cvColorArray, abcGeom.GeometryScope.kVertexScope)
+        # cvColor.set(cvColorArray)
 
-    degree = 3
-    # pointslist = []
-    pointArray = imath.V3fArray(numCVs)
-    widthArray = imath.FloatArray(numCVs)
-    hairRootlist = []
-    knots = []
+        # write width
+        widths = abcGeom.OFloatGeomParamSample(widthArray, abcGeom.GeometryScope.kVertexScope)
+        samp.setWidths(widths)
+        self.schema.set(samp)
 
-    curveIndex = 0
-    cvIndex = 0
-    for j in range(len(PrimitiveInfosList)):
-        PrimitiveInfos = PrimitiveInfosList[j]
-        posData = PositionsDataList[j]
-        widthData = WidthsDataList[j]
-        for i, PrimitiveInfo in enumerate(PrimitiveInfos):
-            offset = PrimitiveInfo[0]
-            length = int(PrimitiveInfo[1])
-            if length < 2:
-                continue
-            # pointslist += posData[offset:offset + length].reshape(-1).tolist()
-            startAddr = offset * 3
-            for k in range(length):
-                pointArray[cvIndex].x = posData[startAddr]
-                pointArray[cvIndex].y = posData[startAddr + 1]
-                pointArray[cvIndex].z = posData[startAddr + 2]
-                if k == 0 and needHairRootList:
-                    hairRootlist.append(om.MPoint(pointArray[cvIndex]))
-                widthArray[cvIndex] = widthData[offset + k]
-                startAddr += 3
-                cvIndex += 1
-            orders[curveIndex] = degree + 1
-            nVertices[curveIndex] = length
+        if print_debug:
+            print("write_first_frame: %.4f" % (time.time() - startTime))
 
-            degree = 3
-            knotsInsideNum = length - degree + 1
-            # knotsList = [*([0] * (degree - 1)), *list(range(knotsInsideNum)), *([knotsInsideNum - 1] * (degree - 1))]
-            knotsList = [0] * (degree - 1) + list(range(knotsInsideNum)) + [knotsInsideNum - 1] * (degree - 1)
-            knots += knotsList
-            curveIndex += 1
+    def write_frame(self):
+        PrimitiveInfosList, PositionsDataList, WidthsDataList = getXgenData(self.fnDepNode)
+        if print_debug:
+            startTime = time.time()
+        numCurves = 0
+        numCVs = 0
+        for i, PrimitiveInfos in enumerate(PrimitiveInfosList):
+            numCurves += len(PrimitiveInfos)
+            for PrimitiveInfo in PrimitiveInfos:
+                numCVs += PrimitiveInfo[1]
 
-    samp.setCurvesNumVertices(nVertices)
-    # samp.setPositions(floatList2V3fArray(pointslist))
-    samp.setPositions(pointArray)
-    samp.setKnots(list2ImathArray(knots, imath.FloatArray))
-    # samp.setOrders(list2ImathArray(orders, imath.UnsignedCharArray))
-    samp.setOrders(orders)
+        cp = self.schema.getArbGeomParams()
 
-    # bake vertex color example
-    # cvColor = abcGeom.OC3fGeomParam(cp, "groom_color", False, abcGeom.GeometryScope.kVertexScope, 1)
-    # cvColorArray = imath.C3fArray(len(pointslist) // 3)
-    # i = 0
-    # color1 = imath.Color3f((0, 1, 1));
-    # color2 = imath.Color3f((1, 0, 1))
-    # for _ in range(len(nVertices)):
-    #     length = nVertices[_]
-    #     for j in range(length):
-    #         t = (j / (length - 1))
-    #         cvColorArray[i] = color1 * (1 - t) + color2 * t
-    #         i += 1
-    # cvColorArray = abcGeom.OC3fGeomParamSample(cvColorArray, abcGeom.GeometryScope.kVertexScope)
-    # cvColor.set(cvColorArray)
+        samp = abcGeom.OCurvesSchemaSample()
+        samp.setBasis(self.firstSamp.getBasis())
+        samp.setWrap(self.firstSamp.getWrap())
+        samp.setType(self.firstSamp.getType())
 
-    # write width
-    widths = abcGeom.OFloatGeomParamSample(widthArray, abcGeom.GeometryScope.kVertexScope)
-    samp.setWidths(widths)
-    curveschema.set(samp)
-    if needHairRootList:
-        return hairRootlist
+        samp.setCurvesNumVertices(self.firstSamp.getCurvesNumVertices())
+        samp.setKnots(self.firstSamp.getKnots())
+        samp.setOrders(self.firstSamp.getOrders())
+        samp.setWidths(self.firstSamp.getWidths())
+
+        pointArray = imath.V3fArray(numCVs)
+
+        curveIndex = 0
+        cvIndex = 0
+        for j in range(len(PrimitiveInfosList)):
+            PrimitiveInfos = PrimitiveInfosList[j]
+            posData = PositionsDataList[j]
+            for i, PrimitiveInfo in enumerate(PrimitiveInfos):
+                offset = PrimitiveInfo[0]
+                length = int(PrimitiveInfo[1])
+                if length < 2:
+                    continue
+                startAddr = offset * 3
+                for k in range(length):
+                    pointArray[cvIndex].x = posData[startAddr]
+                    pointArray[cvIndex].y = posData[startAddr + 1]
+                    pointArray[cvIndex].z = posData[startAddr + 2]
+                    startAddr += 3
+                    cvIndex += 1
+
+                curveIndex += 1
+
+        samp.setPositions(pointArray)
+
+        self.schema.set(samp)
+        if print_debug:
+            print("write_frame: %.4f" % (time.time() - startTime))
 
 
-def bake_uv(curveObj, hairRootList, bakeMesh, uv_set = None):
-    if bakeMesh is None:
-        return
-    if uv_set is None:
-        uv_set = bakeMesh.currentUVSetName()
-    elif uv_set not in bakeMesh.getUVSetNames():
-        raise Exception('Invalid UV Set : {}'.format(uv_set))
-
-    uvs = imath.V2fArray(len(hairRootList))
-    for i, hairRoot in enumerate(hairRootList):
-        res = bakeMesh.getUVAtPoint(hairRoot, om.MSpace.kWorld, uvSet=uv_set)
-        uvs[i].x = res[0]
-        uvs[i].y = res[1]
-
-    schema = curveObj.getSchema()
-    cp = schema.getArbGeomParams()
-    uv_prop = abc.OV2fArrayProperty(cp, "groom_root_uv")
-    uv_prop.setValue(uvs)
-
-#%%
+# %%
 try:
-    from PySide6 import QtCore, QtWidgets
+    from PySide6 import QtCore, QtWidgets, QtGui
     import shiboken6 as shiboken
 except:
-    from PySide2 import QtCore, QtWidgets
+    from PySide2 import QtCore, QtWidgets, QtGui
     import shiboken2 as shiboken
 
 import maya.OpenMayaUI as om1ui
@@ -339,10 +452,11 @@ def mayaWindow():
     main_window_ptr = om1ui.MQtUtil.mainWindow()
     return shiboken.wrapInstance(int(main_window_ptr), QtWidgets.QWidget)
 
-#%%
+
+# %%
 class SaveXGenWindow(QtWidgets.QDialog):
     class Content:
-        def __init__(self, fnDepNode, showName, Type, groupName, isGuide, bakeUV):
+        def __init__(self, fnDepNode, showName, Type, groupName, isGuide, bakeUV, animation, export):
             self.showName = showName
             self.fnDepNode = fnDepNode
             self.Type = Type
@@ -352,28 +466,40 @@ class SaveXGenWindow(QtWidgets.QDialog):
             self.isGuide.setChecked(isGuide)
             self.bakeUV = QtWidgets.QCheckBox()
             self.bakeUV.setChecked(bakeUV)
+            self.animation = QtWidgets.QCheckBox()
+            self.animation.setChecked(animation)
+            self.export = QtWidgets.QCheckBox()
+            self.export.setChecked(export)
 
     curveType = "curve"
     xgenType = "xgen"
-    instance = None
-
-    @staticmethod
-    def getInstance():
-        if SaveXGenWindow.instance is None:
-            SaveXGenWindow.instance = SaveXGenWindow()
-        return SaveXGenWindow.instance
 
     def __init__(self, parent=mayaWindow()):
         super(SaveXGenWindow, self).__init__(parent)
         self.contentList = []
         self.save_path = '.'
+        self.bakeMesh = None
         self.setWindowTitle("Export XGen to UE Groom")
-        self.setGeometry(400, 400, 800, 400)
+        self.setGeometry(400, 400, 850, 450)
         self.buildUI()
 
     def showAbout(self):
         QtWidgets.QMessageBox.about(self, "Export XGen to UE Groom",
                                     "A small tool to export XGen to UE Groom, by PDE26jjk.<br> link:  <a href='https://github.com/PDE26jjk/XGenUEGroomExporter'>https://github.com/PDE26jjk/XGenUEGroomExporter</a>")
+
+    def createFrame(self, labelText):
+        try:
+            frame = om1ui.MQtUtil.findControl(
+                cmds.frameLayout(label=labelText, collapsable=True, collapse=True, manage=True))
+            frame = shiboken.wrapInstance(int(frame), QtWidgets.QWidget)
+            frame.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Maximum)
+            frameLayout = frame.children()[2].children()[0]
+        except:
+            frame = QtWidgets.QFrame(self)
+            frame.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Maximum)
+            frameLayout = QtWidgets.QVBoxLayout(frame)
+            frame.children().append(frameLayout)
+        return frame, frameLayout
 
     def buildUI(self):
         main_layout = QtWidgets.QVBoxLayout()
@@ -397,13 +523,17 @@ class SaveXGenWindow(QtWidgets.QDialog):
         main_layout.addLayout(hBox)
 
         self.table = QtWidgets.QTableWidget(self)
-        self.table.setColumnCount(6)
-        self.table.setHorizontalHeaderLabels(["Name", "Type", "Group name", "Is guide", "Bake UV", ""])
-        self.table.horizontalHeader().setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeToContents)
-        self.table.setColumnWidth(3, 140)
-        self.table.horizontalHeader().setSectionResizeMode(3, QtWidgets.QHeaderView.Fixed)
+        self.table.setColumnCount(8)  # 设置列数
+        self.table.setHorizontalHeaderLabels(["", "Name", "Type", "Group name", "Is guide", "Bake UV", "Animation", ""])
+        self.table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.Fixed)
+        self.table.setColumnWidth(0, 40)
+        self.table.horizontalHeader().setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeToContents)
         self.table.setColumnWidth(4, 140)
         self.table.horizontalHeader().setSectionResizeMode(4, QtWidgets.QHeaderView.Fixed)
+        self.table.setColumnWidth(5, 140)
+        self.table.horizontalHeader().setSectionResizeMode(5, QtWidgets.QHeaderView.Fixed)
+        self.table.setColumnWidth(6, 140)
+        self.table.horizontalHeader().setSectionResizeMode(6, QtWidgets.QHeaderView.Fixed)
         self.table.horizontalHeader().setStretchLastSection(True)
 
         self.table.setStyleSheet("""
@@ -421,30 +551,18 @@ class SaveXGenWindow(QtWidgets.QDialog):
         self.table.clearContents()
         self.table.setRowCount(0)
 
-        try:
-            self.Bakeframe = om1ui.MQtUtil.findControl(
-                cmds.frameLayout(label='Bake UV', collapsable=True, collapse=True, manage=True))
-            self.Bakeframe = shiboken.wrapInstance(int(self.Bakeframe), QtWidgets.QWidget)
-            self.Bakeframe.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Maximum)
-            # self.Bakeframe.setParent(self)
-            frameLayout = self.Bakeframe.children()[2].children()[0]
-        except:
-            self.Bakeframe = QtWidgets.QFrame(self)
-            self.Bakeframe.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Maximum)
-            frameLayout = QtWidgets.QVBoxLayout(self.Bakeframe)
-            self.Bakeframe.children().append(frameLayout)
+        self.Bakeframe, frameLayout = self.createFrame(labelText="Bake UV")
 
         self.MeshName = QtWidgets.QLabel("Mesh : ---")
-
         hBox = QtWidgets.QHBoxLayout()
         hBox.setContentsMargins(10, 10, 10, 10)
         hBox.addWidget(self.MeshName)
         hBox2 = QtWidgets.QHBoxLayout()
         label = QtWidgets.QLabel("UV Set : ")
         hBox2.addWidget(label)
-
         self.combo = QtWidgets.QComboBox()
         self.combo.addItem("     ---     ")
+
         self.uvSetStr = QtWidgets.QLabel("Selected: None")
 
         self.combo.currentIndexChanged.connect(self.update_label)
@@ -464,6 +582,44 @@ class SaveXGenWindow(QtWidgets.QDialog):
         self.separator.setFrameShape(QtWidgets.QFrame.HLine)
         self.separator.setFrameShadow(QtWidgets.QFrame.Sunken)
 
+        self.AnimationFrame, frameLayout = self.createFrame(labelText="Animation")
+
+        validator = QtGui.QIntValidator()
+        validator.setRange(0, 99999)
+        self.startFrame = QtWidgets.QLineEdit()
+        self.startFrame.setMaximumWidth(60)
+        self.startFrame.setValidator(validator)
+        self.startFrame.setText(str(0))
+        self.endFrame = QtWidgets.QLineEdit()
+        self.endFrame.setMaximumWidth(60)
+        self.endFrame.setValidator(validator)
+        self.endFrame.setText(str(0))
+        self.preroll = QtWidgets.QCheckBox("Preroll")
+
+        frameLayout.setContentsMargins(10, 10, 10, 10)
+        hBox = QtWidgets.QHBoxLayout()
+        hBox.addWidget(QtWidgets.QLabel("Frame Range : "))
+        hBox.addWidget(self.startFrame)
+        hBox.addWidget(QtWidgets.QLabel(" ~ "))
+        hBox.addWidget(self.endFrame)
+        hBox.addStretch(1)
+        hBox2 = QtWidgets.QHBoxLayout()
+        hBox2.addWidget(self.preroll)
+        hBox2.addStretch(1)
+
+        frameLayout.addLayout(hBox)
+        frameLayout.addLayout(hBox2)
+
+        self.SettingFrame, frameLayout = self.createFrame(labelText="Setting")
+
+        frameLayout.setContentsMargins(10, 10, 10, 10)
+        hBox = QtWidgets.QHBoxLayout()
+        self.createGroupId_cb = QtWidgets.QCheckBox("Create group id")
+        self.createGroupId_cb.setChecked(True)
+        hBox.addWidget(self.createGroupId_cb)
+
+        frameLayout.addLayout(hBox)
+
         self.save_button = QtWidgets.QPushButton("Save Alembic File", self)
         self.save_button.clicked.connect(self.save_abc)
 
@@ -476,6 +632,8 @@ class SaveXGenWindow(QtWidgets.QDialog):
 
         main_layout.addWidget(self.table)
         main_layout.addWidget(self.Bakeframe)
+        main_layout.addWidget(self.AnimationFrame)
+        main_layout.addWidget(self.SettingFrame)
         main_layout.addWidget(self.separator)
         main_layout.addLayout(button_layout)
 
@@ -504,8 +662,8 @@ class SaveXGenWindow(QtWidgets.QDialog):
             print("No content")
             return
         file_path = cmds.fileDialog2(
-            dialogStyle=2,
-            caption="Save as Alembic file",
+            # dialogStyle=2,
+            caption="Save as Alembic File",
             fileMode=0,
             okCaption="save",
             # defaultExtension='abc',
@@ -517,19 +675,84 @@ class SaveXGenWindow(QtWidgets.QDialog):
         else:
             return
         startTime = time.time()
+        oldCurTime = omAnim.MAnimControl.currentTime()
         archive = abc.OArchive(str(file_path[0]))
+
+        anyAnimation = False
         for item in self.contentList:
+            hasAnimation = item.animation.isChecked()
+            if hasAnimation:
+                anyAnimation = True
+                return
+        if anyAnimation:
+            frameRange = [int(self.startFrame.text()), int(self.endFrame.text())]
+            if (frameRange[0] > frameRange[1]
+                    or frameRange[0] < omAnim.MAnimControl.minTime().value
+                    or frameRange[1] > omAnim.MAnimControl.maxTime().value):
+                raise ValueError("Frame out of range.")
+            # frameRange[0] = int(max(frameRange[0], omAnim.MAnimControl.minTime().value))
+            # frameRange[1] = int(min(frameRange[1], omAnim.MAnimControl.maxTime().value))
+
+            sec = om.MTime(1, om.MTime.kSeconds)
+            spf = 1.0 / sec.asUnits(om.MTime.uiUnit())
+            timeSampling = abcA.TimeSampling(spf, spf * frameRange[0])
+
+            timeIndex = archive.addTimeSampling(timeSampling)
+
+        proxyList = []
+        for item in self.contentList:
+            if not item.export:
+                continue
             fnDepNode = item.fnDepNode
-            curveObj = abcGeom.OCurves(archive.getTop(), str(fnDepNode.name()))
             needBakeUV = item.bakeUV.isChecked()
+            hasAnimation = item.animation.isChecked()
+            if hasAnimation:
+                curveObj = abcGeom.OCurves(archive.getTop(), str(fnDepNode.name()), timeIndex)
+            else:
+                curveObj = abcGeom.OCurves(archive.getTop(), str(fnDepNode.name()))
+
             if item.Type == SaveXGenWindow.xgenType:
-                rootList = write_xgen(curveObj, fnDepNode, needBakeUV)
+                proxy = XGenProxy(curveObj, fnDepNode, needBakeUV, hasAnimation)
             elif item.Type == SaveXGenWindow.curveType:
-                rootList = write_curves(curveObj, fnDepNode, needBakeUV)
-            write_group_and_guide(curveObj, item.groupName.text(), item.isGuide.isChecked())
-            if needBakeUV:
-                bake_uv(curveObj, rootList, self.bakeMesh, self.uvSetStr.text())
-        print("Data has been saved in {}, it took {:.2f} seconds.".format(file_path[0], time.time() - startTime))
+                proxy = CurvesProxy(curveObj, fnDepNode, needBakeUV, hasAnimation)
+            else:
+                continue
+            proxyList.append(proxy)
+            proxy.write_group_name(item.groupName.text())
+            proxy.write_is_guide(item.isGuide.isChecked())
+
+        if len(proxyList) == 0:
+            print("No content")
+            return
+
+        if self.createGroupId_cb.isChecked():
+            groupIds = dict()
+            currentId = 0
+            for proxy in proxyList:
+                if proxy.groupName not in groupIds:
+                    groupIds[proxy.groupName] = currentId
+                    currentId += 1
+                proxy.write_group_id(groupIds[proxy.groupName])
+
+        if anyAnimation:
+            if self.preroll.isChecked():
+                for frame in range(int(omAnim.MAnimControl.minTime().value), frameRange[0]):
+                    om.MGlobal.viewFrame(frame)
+            for frame in range(frameRange[0], frameRange[1] + 1):
+                om1.MGlobal.viewFrame(frame)
+                for item in proxyList:
+                    if frame == frameRange[0]:
+                        item.write_first_frame()
+                    elif item.animation:
+                        item.write_frame()
+                    item.back_uv(self.bakeMesh, self.uvSetStr.text())
+            omAnim.MAnimControl.setCurrentTime(oldCurTime)
+        else:
+            for item in proxyList:
+                item.write_first_frame()
+                item.back_uv(self.bakeMesh, self.uvSetStr.text())
+        print("Data has been saved in %s, it took %.2f seconds." % (file_path[0], time.time() - startTime))
+
         return file_path[0]
 
     def fillWithSelectList(self):
@@ -552,7 +775,7 @@ class SaveXGenWindow(QtWidgets.QDialog):
             if xgDes is not None:
                 contentList.append(
                     SaveXGenWindow.Content(xgDes, fnDepNode.name(), SaveXGenWindow.xgenType, fnDepNode.name(), False,
-                                           False))
+                                           False, False, True))
                 boundMesh = self.findBoundMesh(xgDes)
                 if boundMesh is not None:
                     self.setBakeMesh(boundMesh)
@@ -570,22 +793,26 @@ class SaveXGenWindow(QtWidgets.QDialog):
                     groupNameStr = groupNameStr[:-len(suffix)]
                 contentList.append(
                     SaveXGenWindow.Content(fnDepNode, fnDepNode.name(), SaveXGenWindow.curveType, groupNameStr, True,
-                                           False))
+                                           False, False, True))
 
         self.table.setRowCount(len(contentList))
         for row in range(len(contentList)):
+            self.table.setCellWidget(row, 0, contentList[row].export)
+            contentList[row].export.setStyleSheet("padding-left:8px")
             item = QtWidgets.QTableWidgetItem(contentList[row].showName)
-            item.setFlags(QtCore.Qt.ItemFlag.ItemIsEnabled)  # 不可编辑
-            self.table.setItem(row, 0, item)
-
-            item = QtWidgets.QTableWidgetItem(contentList[row].Type)
             # item.setTextAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
             item.setFlags(QtCore.Qt.ItemFlag.ItemIsEnabled)
             self.table.setItem(row, 1, item)
 
-            self.table.setCellWidget(row, 2, contentList[row].groupName)
-            self.table.setCellWidget(row, 3, contentList[row].isGuide)
-            self.table.setCellWidget(row, 4, contentList[row].bakeUV)
+            item = QtWidgets.QTableWidgetItem(contentList[row].Type)
+            # item.setTextAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+            item.setFlags(QtCore.Qt.ItemFlag.ItemIsEnabled)
+            self.table.setItem(row, 2, item)
+
+            self.table.setCellWidget(row, 3, contentList[row].groupName)
+            self.table.setCellWidget(row, 4, contentList[row].isGuide)
+            self.table.setCellWidget(row, 5, contentList[row].bakeUV)
+            self.table.setCellWidget(row, 6, contentList[row].animation)
 
         self.contentList = contentList
 
@@ -610,7 +837,7 @@ class SaveXGenWindow(QtWidgets.QDialog):
             self.combo.addItems(mesh.getUVSetNames())
 
 
-# %%
-
-SaveXGenWindow.getInstance().show()
-# %%
+SaveXGenWindowInstanceName = '_SaveXGenWindowInstance'
+if SaveXGenWindowInstanceName not in globals():
+    globals()[SaveXGenWindowInstanceName] = SaveXGenWindow()
+globals()[SaveXGenWindowInstanceName].show()
