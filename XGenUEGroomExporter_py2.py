@@ -683,7 +683,7 @@ class SaveXGenWindow(QtWidgets.QDialog):
             hasAnimation = item.animation.isChecked()
             if hasAnimation:
                 anyAnimation = True
-                return
+                break
         if anyAnimation:
             frameRange = [int(self.startFrame.text()), int(self.endFrame.text())]
             if (frameRange[0] > frameRange[1]
@@ -719,7 +719,7 @@ class SaveXGenWindow(QtWidgets.QDialog):
                 continue
             proxyList.append(proxy)
             proxy.write_group_name(item.groupName.text())
-            proxy.write_is_guide(item.isGuide.isChecked())
+            proxy.write_is_guide(item.useGuide.isChecked())
 
         if len(proxyList) == 0:
             print("No content")

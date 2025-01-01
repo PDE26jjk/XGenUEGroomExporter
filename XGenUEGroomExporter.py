@@ -682,7 +682,7 @@ class SaveXGenWindow(QtWidgets.QDialog):
             hasAnimation = item.animation.isChecked()
             if hasAnimation:
                 anyAnimation = True
-                return
+                break
         if anyAnimation:
             frameRange = [int(self.startFrame.text()), int(self.endFrame.text())]
             if (frameRange[0] > frameRange[1]
