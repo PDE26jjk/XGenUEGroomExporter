@@ -353,7 +353,7 @@ class XGenProxy(CurvesProxy):
 
                 knotsInsideNum = length - degree + 1
                 # knotsList = [*([0] * (degree - 1)), *list(range(knotsInsideNum)), *([knotsInsideNum - 1] * (degree - 1))]
-                knotsList = [0] * (degree - 1) + list(range(knotsInsideNum)) + [knotsInsideNum - 1] * (degree - 1)
+                knotsList = [0] * degree + list(range(knotsInsideNum)) + [knotsInsideNum - 1] * degree
                 knots += knotsList
                 curveIndex += 1
 
