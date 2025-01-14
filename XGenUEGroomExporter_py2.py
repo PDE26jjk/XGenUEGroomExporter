@@ -386,9 +386,9 @@ class XGenProxy(CurvesProxy):
             print("write_first_frame: %.4f" % (time.time() - startTime))
 
     def write_frame(self):
-        PrimitiveInfosList, PositionsDataList, WidthsDataList = getXgenData(self.fnDepNode)
         if print_debug:
             startTime = time.time()
+        PrimitiveInfosList, PositionsDataList, WidthsDataList = getXgenData(self.fnDepNode)
         numCurves = 0
         numCVs = 0
         for i, PrimitiveInfos in enumerate(PrimitiveInfosList):
@@ -719,7 +719,7 @@ class SaveXGenWindow(QtWidgets.QDialog):
                 continue
             proxyList.append(proxy)
             proxy.write_group_name(item.groupName.text())
-            proxy.write_is_guide(item.useGuide.isChecked())
+            proxy.write_is_guide(item.isGuide.isChecked())
 
         if len(proxyList) == 0:
             print("No content")
@@ -737,7 +737,7 @@ class SaveXGenWindow(QtWidgets.QDialog):
         if anyAnimation:
             if self.preroll.isChecked():
                 for frame in range(int(omAnim.MAnimControl.minTime().value), frameRange[0]):
-                    om.MGlobal.viewFrame(frame)
+                    om1.MGlobal.viewFrame(frame)
             for frame in range(frameRange[0], frameRange[1] + 1):
                 om1.MGlobal.viewFrame(frame)
                 for item in proxyList:
