@@ -5,6 +5,7 @@ import alembic.AbcCoreAbstract as abcA
 import maya.OpenMaya as om1
 import maya.api.OpenMayaAnim as omAnim
 import maya.api.OpenMaya as om
+
 om2 = om
 import imath
 import array
@@ -14,7 +15,6 @@ import maya.cmds as cmds
 import time
 import struct
 import uuid
-from pymel.core import mel
 import xgenm as xg
 import os
 
@@ -65,7 +65,6 @@ def getXgenData(fnDepNode, onlyNeedFaceUV=False):
             if i > maxIt:
                 break
         return blocks
-
 
     dataBlocks = GetBlocks(rawData)
     headerBlock = dataBlocks[0]
@@ -374,7 +373,8 @@ class XGenProxy(CurvesProxy):
                 nVertices[curveIndex] = length
 
                 knotsInsideNum = length - degree + 1
-                knotsList = [0] * degree + list(range(knotsInsideNum)) + [knotsInsideNum - 1] * degree  # The endpoint repeats one more than Maya
+                knotsList = [0] * degree + list(range(knotsInsideNum)) + [
+                    knotsInsideNum - 1] * degree  # The endpoint repeats one more than Maya
                 # print(knotsList)
                 knots += knotsList
                 curveIndex += 1
@@ -547,23 +547,6 @@ def generate_short_hash():
     return str(unique_id).replace('-', '')[:8]
 
 
-def GuidesToCurves(dn):
-    if not dn.object().hasFn(om2.MFn.kTransform):
-        path = om2.MDagPath.getAPathTo(om2.MFnDagNode(dn.object()).parent(0))
-    else:
-        path = om2.MDagPath.getAPathTo(dn.object())
-
-    cmds.select(path, replace=True)
-    # res = cmds.xgmGroomConvert(prefix="_"+generate_short_hash())
-    curves = mel.eval("xgmCreateCurvesFromGuides(0, 0)")
-    if len(curves) == 0:
-        raise Exception("No curves found")
-    sel = om2.MGlobal.getActiveSelectionList()
-    curve = om2.MFnDagNode(sel.getDagPath(0))
-    om2.MFnDagNode(getSaveXGenDesWindowParent()).addChild(curve.parent(0))
-    return om2.MFnDagNode(curve.parent(0))
-
-
 def ConvertToInteractive(dn):
     if not dn.object().hasFn(om2.MFn.kTransform):
         path = om2.MDagPath.getAPathTo(om2.MFnDagNode(dn.object()).parent(0))
@@ -694,7 +677,7 @@ class GuideProxy(CurvesProxy):
     def __init__(self, curveObj, fnDepNode, needRootList=False, animation=False):
         if not fnDepNode.object().hasFn(om2.MFn.kTransform):
             fnDepNode = om2.MFnDependencyNode(om2.MFnDagNode(fnDepNode.object()).parent(0))
-        super(GuideProxy,self).__init__(curveObj, fnDepNode, needRootList, animation)
+        super(GuideProxy, self).__init__(curveObj, fnDepNode, needRootList, animation)
         itDag = om2.MItDag()
         itDag.reset(self.fnDepNode.object(), om2.MItDag.kBreadthFirst, om2.MFn.kInvalid)
         guides = []
@@ -775,7 +758,9 @@ class GuideProxy(CurvesProxy):
                 hash = color2Int(color)
                 guide_id = 0
                 if hash not in guide_map:
-                    print("The spline index ({} ,{}) does not have a valid guide attached to {first_guide_name}.".format(j,i))
+                    print(
+                        "The spline index ({} ,{}) does not have a valid guide attached to {first_guide_name}.".format(
+                            j, i))
                 else:
                     guide_id = guide_map[hash][1]
 
@@ -814,7 +799,8 @@ class GuideProxy(CurvesProxy):
                 self.hairRootList.append(om2.MPoint(data[:3]))
 
             knotsInsideNum = numCVs - degree + 1
-            knotsList = [0] * degree + list(range(knotsInsideNum)) + [knotsInsideNum - 1] * degree  # The endpoint repeats one more than Maya
+            knotsList = [0] * degree + list(range(knotsInsideNum)) + [
+                knotsInsideNum - 1] * degree  # The endpoint repeats one more than Maya
             # print(knotsList)
             knots += knotsList
         samp.setCurvesNumVertices(nVertices)

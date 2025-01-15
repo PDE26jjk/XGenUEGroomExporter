@@ -9,8 +9,8 @@ Maya2025版本可用。[用法视频](https://www.bilibili.com/video/BV1U7mzYDEA
 
 现在只维护XGenUEGroomExporter.py和XGenDescriptionUEGroomExporter.py及其py2版本。
 
-微信 : XJ845077205
-邮箱：26jjk@sina.com
+微信: XJ845077205  
+邮箱: 26jjk@sina.com
 
 ## 更新功能：
 

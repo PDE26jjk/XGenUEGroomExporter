@@ -14,12 +14,12 @@ from typing import List
 import time
 import struct
 import uuid
-from pymel.core import mel
 import xgenm as xg
 import os
 
 _XGenExporterVersion = "1.01"
 print_debug = False
+
 
 # %%
 def list2ImathArray(l: list, _type):
@@ -150,6 +150,7 @@ def getXgenData(fnDepNode: om.MFnDependencyNode, onlyNeedFaceUV=False):
         return PrimitiveInfosList, FaceUVList, FaceIdList
 
     return PrimitiveInfosList, PositionsDataList, WidthsDataList
+
 
 # %%
 class CurvesProxy:
@@ -501,6 +502,7 @@ def deleteSaveXGenDesWindowParent():
     if cmds.objExists(SaveXGenDesWindowParentName):
         cmds.delete(SaveXGenDesWindowParentName)
 
+
 # %%
 
 
@@ -539,23 +541,6 @@ def getClumpingPtexPath(dn: om.MFnDependencyNode):
 def generate_short_hash():
     unique_id = uuid.uuid4()
     return str(unique_id).replace('-', '')[:8]
-
-
-def GuidesToCurves(dn: om.MFnDependencyNode):
-    if not dn.object().hasFn(om.MFn.kTransform):
-        path = om.MDagPath.getAPathTo(om.MFnDagNode(dn.object()).parent(0))
-    else:
-        path = om.MDagPath.getAPathTo(dn.object())
-
-    cmds.select(path, replace=True)
-    # res = cmds.xgmGroomConvert(prefix="_"+generate_short_hash())
-    curves = mel.eval("xgmCreateCurvesFromGuides(0, 0)")
-    if len(curves) == 0:
-        raise Exception("No curves found")
-    sel: om.MSelectionList = om.MGlobal.getActiveSelectionList()
-    curve = om.MFnDagNode(sel.getDagPath(0))
-    om.MFnDagNode(getSaveXGenDesWindowParent()).addChild(curve.parent(0))
-    return om.MFnDagNode(curve.parent(0))
 
 
 def ConvertToInteractive(dn: om.MFnDependencyNode):
