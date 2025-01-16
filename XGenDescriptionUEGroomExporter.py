@@ -667,7 +667,22 @@ class PtexSampler:
         self.ptexFilterEvalFunc(self.filter, self.vector._Myfirst, 0, 3, faceId, faceU, faceV, 0, 0, 0, 0)
         return self.vector[:3]
 
+# %%
+class XGenProxyEveryFrame(XGenProxy):
+    def __init__(self, curveObj: abcGeom.OCurves, descFnDepNode: om.MFnDependencyNode, needRootList=False,
+                 animation=False):
+        super().__init__(curveObj, None, needRootList, animation)
+        self.descFnDepNode = descFnDepNode
 
+    def write_first_frame(self):
+        spline = ConvertToInteractive(self.descFnDepNode)
+        self.fnDepNode = spline
+        super().write_first_frame()
+
+    def write_frame(self):
+        spline = ConvertToInteractive(self.descFnDepNode)
+        self.fnDepNode = spline
+        super().write_frame()
 # %%
 class GuideProxy(CurvesProxy):
     def __init__(self, curveObj: abcGeom.OCurves, fnDepNode: om.MFnDependencyNode, needRootList=False, animation=False):
@@ -1161,13 +1176,12 @@ class SaveXGenDesWindow(QtWidgets.QDialog):
                 fnDepNode = item.fnDepNode
                 needBakeUV = item.bakeUV.isChecked()
                 hasAnimation = item.animation.isChecked()
-                spline = ConvertToInteractive(item.fnDepNode)
                 useGuide = item.useGuide.isChecked()
                 if hasAnimation:
                     curveObj = abcGeom.OCurves(archive.getTop(), fnDepNode.name(), timeIndex)
                 else:
                     curveObj = abcGeom.OCurves(archive.getTop(), fnDepNode.name())
-                xgenProxy = XGenProxy(curveObj, spline, needBakeUV | useGuide, item.splineAnimation)
+                xgenProxy = XGenProxyEveryFrame(curveObj, item.fnDepNode, needBakeUV | useGuide, item.splineAnimation)
                 xgenProxy.needBakeUV = needBakeUV
                 xgenProxy.write_group_name(item.groupName.text())
                 if useGuide:
