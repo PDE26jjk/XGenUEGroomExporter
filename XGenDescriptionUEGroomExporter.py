@@ -17,7 +17,7 @@ import uuid
 import xgenm as xg
 import os
 
-_XGenExporterVersion = "1.02"
+_XGenExporterVersion = "1.04"
 print_debug = False
 
 
@@ -39,7 +39,7 @@ def floatList2V3fArray(l: list):
 
 
 # %%
-def getXgenData(fnDepNode: om.MFnDependencyNode, onlyNeedFaceUV=False):
+def getXgenData(fnDepNode: om.MFnDependencyNode, keys):
     splineData: om.MPlug = fnDepNode.findPlug("outSplineData", False)
 
     handle: om.MDataHandle = splineData.asMObject()
@@ -106,13 +106,10 @@ def getXgenData(fnDepNode: om.MFnDependencyNode, onlyNeedFaceUV=False):
         blocks = GetBlocks(validData)
         return validData[blocks[index][0]:blocks[index][1]]
 
-    if onlyNeedFaceUV:
-        FaceUVList = []
-        FaceIdList = []
-    PrimitiveInfosList = []
-    PositionsDataList = []
-    WidthsDataList = []
+    outputs = {key: [] for key in keys}
     for k, v in Items.items():
+        if k not in outputs:
+            continue
         if k == 'PrimitiveInfos':
             dtype_format = '<IQ'
             for addr in v:
@@ -122,35 +119,16 @@ def getXgenData(fnDepNode: om.MFnDependencyNode, onlyNeedFaceUV=False):
                 for i in range(0, len(decompressed_data), record_size):
                     PrimitiveInfo = struct.unpack_from(f'{dtype_format}', decompressed_data, i)
                     PrimitiveInfos.append(PrimitiveInfo)
-                PrimitiveInfosList.append(PrimitiveInfos)
-
-        if onlyNeedFaceUV:
-            if k == 'FaceUV':
-                for addr in v:
-                    decompressed_data = decompressData(*addr)
-                    FaceUVList.append(array.array('f', decompressed_data))
-            if k == 'FaceId':
-                for addr in v:
-                    decompressed_data = decompressData(*addr)
-                    FaceIdList.append(array.array('i', decompressed_data))
-            continue
-
-        if k == 'Positions':
+                outputs[k].append(PrimitiveInfos)
+        elif k in ('FaceUV', 'Positions', 'WIDTH_CV'):
             for addr in v:
                 decompressed_data = decompressData(*addr)
-                posData = array.array('f', decompressed_data)
-                PositionsDataList.append(posData)
-
-        if k == 'WIDTH_CV':
+                outputs[k].append(array.array('f', decompressed_data))
+        elif k == 'FaceId':
             for addr in v:
                 decompressed_data = decompressData(*addr)
-                widthData = array.array('f', decompressed_data)
-                WidthsDataList.append(widthData)
-    if onlyNeedFaceUV:
-        return PrimitiveInfosList, FaceUVList, FaceIdList
-
-    return PrimitiveInfosList, PositionsDataList, WidthsDataList
-
+                outputs[k].append(array.array('i', decompressed_data))
+    return [outputs[k] for k in keys]
 
 # %%
 class CurvesProxy:
@@ -308,137 +286,6 @@ class CurvesProxy:
         uv_prop.setValue(uvs)
 
 
-class XGenProxy(CurvesProxy):
-    def __init__(self, curveObj: abcGeom.OCurves, fnDepNode: om.MFnDependencyNode, needRootList=False, animation=False):
-        super().__init__(curveObj, fnDepNode, needRootList, animation)
-        self.needWeight = False
-
-    def write_first_frame(self):
-        if print_debug:
-            startTime = time.time()
-        PrimitiveInfosList, PositionsDataList, WidthsDataList = getXgenData(self.fnDepNode)
-        if print_debug:
-            print("getXgenData: %.4f" % (time.time() - startTime))
-            startTime = time.time()
-        numCurves = 0
-        numCVs = 0
-        for i, PrimitiveInfos in enumerate(PrimitiveInfosList):
-            numCurves += len(PrimitiveInfos)
-            for PrimitiveInfo in PrimitiveInfos:
-                numCVs += PrimitiveInfo[1]
-
-        orders = imath.UnsignedCharArray(numCurves)
-        nVertices = imath.IntArray(numCurves)
-        cp: abc.OCompoundProperty = self.schema.getArbGeomParams()
-
-        samp = self.firstSamp
-        samp.setBasis(abcGeom.BasisType.kBsplineBasis)
-        samp.setWrap(abcGeom.CurvePeriodicity.kNonPeriodic)
-        samp.setType(abcGeom.CurveType.kCubic)
-
-        degree = 3
-        pointArray = imath.V3fArray(numCVs)
-        widthArray = imath.FloatArray(numCVs)
-        if self.needRootList:
-            self.hairRootList = []
-        knots = []
-
-        curveIndex = 0
-        cvIndex = 0
-        for j in range(len(PrimitiveInfosList)):
-            PrimitiveInfos = PrimitiveInfosList[j]
-            posData = PositionsDataList[j]
-            widthData = WidthsDataList[j]
-            for i, PrimitiveInfo in enumerate(PrimitiveInfos):
-                offset = PrimitiveInfo[0]
-                length = int(PrimitiveInfo[1])
-                if length < 2:
-                    continue
-                startAddr = offset * 3
-                for k in range(length):
-                    pointArray[cvIndex].x = posData[startAddr]
-                    pointArray[cvIndex].y = posData[startAddr + 1]
-                    pointArray[cvIndex].z = posData[startAddr + 2]
-                    if k == 0 and self.needRootList:
-                        self.hairRootList.append(om.MPoint(pointArray[cvIndex]))
-                    widthArray[cvIndex] = widthData[offset + k]
-                    startAddr += 3
-                    cvIndex += 1
-
-                orders[curveIndex] = degree + 1
-                nVertices[curveIndex] = length
-
-                knotsInsideNum = length - degree + 1
-                knotsList = [*([0] * degree), *list(range(knotsInsideNum)),
-                             *([knotsInsideNum - 1] * degree)]  # The endpoint repeats one more than Maya
-                # print(knotsList)
-                knots += knotsList
-                curveIndex += 1
-
-        samp.setCurvesNumVertices(nVertices)
-        samp.setPositions(pointArray)
-        samp.setKnots(list2ImathArray(knots, imath.FloatArray))
-        samp.setOrders(orders)
-
-        widths = abcGeom.OFloatGeomParamSample(widthArray, abcGeom.GeometryScope.kVertexScope)
-        samp.setWidths(widths)
-        self.schema.set(samp)
-
-        if print_debug:
-            print("write_first_frame: %.4f" % (time.time() - startTime))
-
-    def write_frame(self):
-        PrimitiveInfosList, PositionsDataList, WidthsDataList = getXgenData(self.fnDepNode)
-        if print_debug:
-            startTime = time.time()
-        numCurves = 0
-        numCVs = 0
-        for i, PrimitiveInfos in enumerate(PrimitiveInfosList):
-            numCurves += len(PrimitiveInfos)
-            for PrimitiveInfo in PrimitiveInfos:
-                numCVs += PrimitiveInfo[1]
-
-        cp: abc.OCompoundProperty = self.schema.getArbGeomParams()
-
-        samp = abcGeom.OCurvesSchemaSample()
-        samp.setBasis(self.firstSamp.getBasis())
-        samp.setWrap(self.firstSamp.getWrap())
-        samp.setType(self.firstSamp.getType())
-
-        samp.setCurvesNumVertices(self.firstSamp.getCurvesNumVertices())
-        samp.setKnots(self.firstSamp.getKnots())
-        samp.setOrders(self.firstSamp.getOrders())
-        samp.setWidths(self.firstSamp.getWidths())
-
-        pointArray = imath.V3fArray(numCVs)
-
-        curveIndex = 0
-        cvIndex = 0
-        for j in range(len(PrimitiveInfosList)):
-            PrimitiveInfos = PrimitiveInfosList[j]
-            posData = PositionsDataList[j]
-            for i, PrimitiveInfo in enumerate(PrimitiveInfos):
-                offset = PrimitiveInfo[0]
-                length = int(PrimitiveInfo[1])
-                if length < 2:
-                    continue
-                startAddr = offset * 3
-                for k in range(length):
-                    pointArray[cvIndex].x = posData[startAddr]
-                    pointArray[cvIndex].y = posData[startAddr + 1]
-                    pointArray[cvIndex].z = posData[startAddr + 2]
-                    startAddr += 3
-                    cvIndex += 1
-
-                curveIndex += 1
-
-        samp.setPositions(pointArray)
-
-        self.schema.set(samp)
-        if print_debug:
-            print("write_frame: %.4f" % (time.time() - startTime))
-
-
 # %%
 try:
     from PySide6 import QtCore, QtWidgets, QtGui
@@ -565,19 +412,25 @@ from ctypes import c_void_p, c_uint64, c_ulonglong, c_float, c_int, c_char_p
 
 PtexSamplerDllFuncName = "_PtexSamplerDllFunc"
 
-
 class PtexSampler:
     class DllFunc:
         @staticmethod
-        def getPtexFilterEvelFunc(filter):
-            def getVFunc(obj, index, *args):
-                vtble = ctypes.cast(obj, ctypes.POINTER(ctypes.c_void_p)).contents
-                vfuncAddr = ctypes.cast(vtble.value + index * 8, ctypes.POINTER(ctypes.c_void_p)).contents.value
-                return ctypes.CFUNCTYPE(*args)(vfuncAddr)
+        def getVFunc(obj, index, *args):
+            vtble = ctypes.cast(obj, ctypes.POINTER(ctypes.c_void_p)).contents
+            vfuncAddr = ctypes.cast(vtble.value + index * 8, ctypes.POINTER(ctypes.c_void_p)).contents.value
+            return ctypes.CFUNCTYPE(*args)(vfuncAddr)
 
-            ptexFilterEvel = getVFunc(filter, 2, c_void_p, c_void_p, c_void_p, c_int, c_int, c_int, c_float, c_float,
-                                      c_float, c_float, c_float, c_float)
+        @staticmethod
+        def getPtexFilterEvelFunc(filter):
+            ptexFilterEvel = PtexSampler.DllFunc.getVFunc(filter, 2, c_void_p, c_void_p, c_void_p, c_int, c_int, c_int,
+                                                          c_float, c_float,
+                                                          c_float, c_float, c_float, c_float)
             return ptexFilterEvel
+
+        @staticmethod
+        def getPtexTextureReleaseFunc(ptexTexture):
+            ptexTextureRelease = PtexSampler.DllFunc.getVFunc(ptexTexture, 1, c_void_p)
+            return ptexTextureRelease
 
         class MyVector(ctypes.Structure):
             _fields_ = [
@@ -598,6 +451,10 @@ class PtexSampler:
             def __getitem__(self, index):
                 return self._Myfirst[index]
 
+    def close(self):
+        getPtexTextureRelease = PtexSampler.DllFunc.getPtexTextureReleaseFunc(self.ptexTexture)
+        getPtexTextureRelease(self.ptexTexture)
+
     def setupFilter(self, path):
         DllFunc: PtexSampler.DllFunc = globals()[PtexSamplerDllFuncName]
         err = ctypes.c_uint64()
@@ -606,7 +463,7 @@ class PtexSampler:
             ctypes.byref(err), 0)
         if ptexTexture is None:
             raise Exception("no ptexTexture found")
-        ptexTexture = ctypes.c_void_p(ptexTexture)
+        self.ptexTexture = ctypes.c_void_p(ptexTexture)
 
         # 定义Options结构体
         class Options(ctypes.Structure):
@@ -627,7 +484,7 @@ class PtexSampler:
                 self.noedgeblend = noedgeblend_  # 设置是否禁用跨面过滤
 
         options = Options()
-        filter = DllFunc.ptex_getFilter(ptexTexture, options)
+        filter = DllFunc.ptex_getFilter(self.ptexTexture, options)
         filter = ctypes.cast(filter, ctypes.c_void_p)
         self.ptexFilterEvalFunc = DllFunc.getPtexFilterEvelFunc(filter)
         self.vector = DllFunc.temp_vector
@@ -668,21 +525,191 @@ class PtexSampler:
         return self.vector[:3]
 
 # %%
-class XGenProxyEveryFrame(XGenProxy):
+class XGenProxyEveryFrame(CurvesProxy):
     def __init__(self, curveObj: abcGeom.OCurves, descFnDepNode: om.MFnDependencyNode, needRootList=False,
                  animation=False):
         super().__init__(curveObj, None, needRootList, animation)
         self.descFnDepNode = descFnDepNode
+        self.order_offset_map = None
 
     def write_first_frame(self):
+        if print_debug:
+            startTime = time.time()
+
         spline = ConvertToInteractive(self.descFnDepNode)
         self.fnDepNode = spline
-        super().write_first_frame()
+        self.firstSpline = spline
+        PrimitiveInfosList, PositionsDataList, WidthsDataList, FaceIdList, FaceUVList = getXgenData(self.fnDepNode,
+                                                                                                    ('PrimitiveInfos',
+                                                                                                     'Positions',
+                                                                                                     'WIDTH_CV',
+                                                                                                     'FaceId',
+                                                                                                     'FaceUV'))
+        if print_debug:
+            print("getXgenData: %.4f" % (time.time() - startTime))
+            startTime = time.time()
+        numCurves = 0
+        numCVs = 0
+        for i, PrimitiveInfos in enumerate(PrimitiveInfosList):
+            numCurves += len(PrimitiveInfos)
+            for PrimitiveInfo in PrimitiveInfos:
+                numCVs += PrimitiveInfo[1]
+        self.numCurves = numCurves
+        self.numCVs = numCVs
+        orders = imath.UnsignedCharArray(numCurves)
+        nVertices = imath.IntArray(numCurves)
+        cp: abc.OCompoundProperty = self.schema.getArbGeomParams()
+
+        samp = self.firstSamp
+        samp.setBasis(abcGeom.BasisType.kBsplineBasis)
+        samp.setWrap(abcGeom.CurvePeriodicity.kNonPeriodic)
+        samp.setType(abcGeom.CurveType.kCubic)
+
+        degree = 3
+        pointArray = imath.V3fArray(numCVs)
+        widthArray = imath.FloatArray(numCVs)
+        if self.needRootList:
+            self.hairRootList = []
+        knots = []
+
+        curveIndex = 0
+        cvIndex = 0
+        cvOffsets = imath.IntArray(numCurves)
+        for j in range(len(PrimitiveInfosList)):
+            PrimitiveInfos = PrimitiveInfosList[j]
+            posData = PositionsDataList[j]
+            widthData = WidthsDataList[j]
+            for i, PrimitiveInfo in enumerate(PrimitiveInfos):
+                offset = PrimitiveInfo[0]
+                length = int(PrimitiveInfo[1])
+                if length < 2:
+                    continue
+                startAddr = offset * 3
+                cvOffsets[curveIndex] = cvIndex
+                for k in range(length):
+                    pointArray[cvIndex].x = posData[startAddr]
+                    pointArray[cvIndex].y = posData[startAddr + 1]
+                    pointArray[cvIndex].z = posData[startAddr + 2]
+                    if k == 0 and self.needRootList:
+                        self.hairRootList.append(om.MPoint(pointArray[cvIndex]))
+                    widthArray[cvIndex] = widthData[offset + k]
+                    startAddr += 3
+                    cvIndex += 1
+
+                orders[curveIndex] = degree + 1
+                nVertices[curveIndex] = length
+
+                knotsInsideNum = length - degree + 1
+                knotsList = [*([0] * degree), *list(range(knotsInsideNum)),
+                             *([knotsInsideNum - 1] * degree)]  # The endpoint repeats one more than Maya
+                # print(knotsList)
+                knots += knotsList
+                curveIndex += 1
+
+        samp.setCurvesNumVertices(nVertices)
+        samp.setPositions(pointArray)
+        samp.setKnots(list2ImathArray(knots, imath.FloatArray))
+        samp.setOrders(orders)
+
+        widths = abcGeom.OFloatGeomParamSample(widthArray, abcGeom.GeometryScope.kVertexScope)
+        samp.setWidths(widths)
+        self.schema.set(samp)
+        if self.animation:
+            index2order = self.get_index2order(FaceIdList, FaceUVList)
+            self.order_offset_map = imath.IntArray(numCurves)
+            for i, offset in zip(index2order, cvOffsets):
+                self.order_offset_map[i] = offset
+        if print_debug:
+            # print(self.order_offset_map)
+            print("write_first_frame: %.4f" % (time.time() - startTime))
+
+    @staticmethod
+    def get_index2order(FaceIdList, FaceUVList):
+        order_list = []
+        for j in range(len(FaceIdList)):
+            FaceUVData = FaceUVList[j]
+            FaceIdData = FaceIdList[j]
+            for i, faceId in enumerate(FaceIdData):
+                u = FaceUVData[i * 2]
+                v = FaceUVData[i * 2 + 1]
+                order_list.append((faceId, u, v))
+        sorted_list = sorted((key, i) for i, key in enumerate(order_list))
+        index_list = imath.IntArray(len(order_list))
+        for order_index, item in enumerate(sorted_list):
+            my_index = item[1]
+            index_list[my_index] = order_index
+        # if print_debug:
+        #     print(sorted_list)
+        return index_list
 
     def write_frame(self):
+        if print_debug:
+            startTime = time.time()
         spline = ConvertToInteractive(self.descFnDepNode)
         self.fnDepNode = spline
-        super().write_frame()
+        PrimitiveInfosList, PositionsDataList, FaceIdList, FaceUVList = getXgenData(self.fnDepNode, ('PrimitiveInfos',
+                                                                                                     'Positions',
+                                                                                                     'FaceId',
+                                                                                                     'FaceUV'))
+
+        numCVs = self.numCVs
+
+        samp = abcGeom.OCurvesSchemaSample()
+        samp.setBasis(self.firstSamp.getBasis())
+        samp.setWrap(self.firstSamp.getWrap())
+        samp.setType(self.firstSamp.getType())
+
+        samp.setCurvesNumVertices(self.firstSamp.getCurvesNumVertices())
+        samp.setKnots(self.firstSamp.getKnots())
+        samp.setOrders(self.firstSamp.getOrders())
+        samp.setWidths(self.firstSamp.getWidths())
+
+        if print_debug:
+            s = time.time()
+        index2order = self.get_index2order(FaceIdList, FaceUVList)
+
+        pointArray = imath.V3fArray(numCVs)
+
+        curveIndex = 0
+        for j in range(len(PrimitiveInfosList)):
+            PrimitiveInfos = PrimitiveInfosList[j]
+            posData = PositionsDataList[j]
+            for PrimitiveInfo in PrimitiveInfos:
+                offset = PrimitiveInfo[0]
+                length = int(PrimitiveInfo[1])
+                if length < 2:
+                    continue
+                startAddr = offset * 3
+                cvIndex = self.order_offset_map[index2order[curveIndex]]
+                for k in range(length):
+                    pointArray[cvIndex].x = posData[startAddr]
+                    pointArray[cvIndex].y = posData[startAddr + 1]
+                    pointArray[cvIndex].z = posData[startAddr + 2]
+                    startAddr += 3
+                    cvIndex += 1
+
+                curveIndex += 1
+        if print_debug:
+            print("loop: %.4f" % (time.time() - s))
+        samp.setPositions(pointArray)
+
+        self.schema.set(samp)
+        if print_debug:
+            print("write_frame: %.4f" % (time.time() - startTime))
+
+
+# %%
+
+GroomGuideIdStartIndexName = '_GroomGuideIdStartIndexName'
+
+
+def getGroomGuideIdStartIndex():
+    return globals()[GroomGuideIdStartIndexName]
+
+
+def setGroomGuideIdStartIndex(value=0):
+    globals()[GroomGuideIdStartIndexName] = value
+
 # %%
 class GuideProxy(CurvesProxy):
     def __init__(self, curveObj: abcGeom.OCurves, fnDepNode: om.MFnDependencyNode, needRootList=False, animation=False):
@@ -702,7 +729,7 @@ class GuideProxy(CurvesProxy):
         self.ptexPath = None
         self.writePtexGuideId = False
 
-    def set_xgen_proxy_and_ptex(self, xgenSpline: XGenProxy, ptexPath: str):
+    def set_xgen_proxy_and_ptex(self, xgenSpline: XGenProxyEveryFrame, ptexPath: str):
         self.xgenProxy = xgenSpline
         self.ptexPath = ptexPath
 
@@ -738,21 +765,22 @@ class GuideProxy(CurvesProxy):
                 print(
                     f"guide {dn.name()} and {old_guide.name()} are in the same area on texture, only use {old_guide.name()}.")
                 continue
-            guide_map[hash] = (guide, i, [])
+            guide_map[hash] = (guide, i)
 
-        PrimitiveInfosList, FaceUVList, FaceIdList = getXgenData(xgenSpline.fnDepNode, True)
-        # print(ptexPath)
+        FaceUVList, FaceIdList = getXgenData(xgenSpline.firstSpline, ('FaceUV', 'FaceId'))
 
         cp: abc.OCompoundProperty = self.schema.getArbGeomParams()
+        guideIdStartIndex = getGroomGuideIdStartIndex()
+        guideIdNextStartIndex = guideIdStartIndex + len(self.guides)
         groom_id = abc.OInt32ArrayProperty(cp, "groom_id")
-        groom_id.setValue(list2ImathArray(list(range(len(self.guides))), imath.IntArray))
+        groom_id.setValue(list2ImathArray(list(range(guideIdStartIndex, guideIdNextStartIndex)), imath.IntArray))
 
         cp: abc.OCompoundProperty = xgenSpline.schema.getArbGeomParams()
-        groom_weigths = abc.OFloatArrayProperty(cp, "groom_guide_weights")
+        groom_weights = abc.OFloatArrayProperty(cp, "groom_guide_weights")
         groom_guide_id = abc.OInt32ArrayProperty(cp, "groom_closest_guides")
         spline_num = len(xgenSpline.hairRootList)
-        weigths = list2ImathArray([1.0] * spline_num, imath.FloatArray)
-        groom_weigths.setValue(weigths)
+        weights = list2ImathArray([1.0] * spline_num, imath.FloatArray)
+        groom_weights.setValue(weights)
 
         guide_ids = imath.IntArray(spline_num)
         first_guide_name = om.MFnDependencyNode(self.guides[0].node()).name()
@@ -766,20 +794,21 @@ class GuideProxy(CurvesProxy):
                 v = FaceUVData[i * 2 + 1]
                 color = ptexSampler.sampleData(u, v, faceId)
                 hash = color2Int(color)
-                guide_id = 0
+                guide_id = guideIdStartIndex
                 if hash not in guide_map:
                     print(f"The spline index ({j} ,{i}) does not have a valid guide attached to {first_guide_name}.")
                 else:
-                    guide_id = guide_map[hash][1]
+                    guide_id += guide_map[hash][1]
 
                 if spline_index >= spline_num:
                     raise Exception(f"spline_index >= spline_num")
                 guide_ids[spline_index] = guide_id
-                guide_map[hash][2].append(spline_index)
+                # guide_map[hash][2].append(spline_index)
                 spline_index += 1
         # print(guide_map)
-
+        ptexSampler.close()
         groom_guide_id.setValue(guide_ids)
+        setGroomGuideIdStartIndex(guideIdNextStartIndex)
 
     def write_first_frame(self):
         numCurves = len(self.guides)
@@ -856,8 +885,8 @@ class SaveXGenDesWindow(QtWidgets.QDialog):
             self.animation.setChecked(animation)
             self.export = QtWidgets.QCheckBox()
             self.export.setChecked(export)
-            self.writePtexGuideId = False
             self.splineAnimation = False
+            self.writePtexGuideId = False
             self.regionPtex = ""
 
     def __init__(self, parent=mayaWindow()):
@@ -949,16 +978,8 @@ class SaveXGenDesWindow(QtWidgets.QDialog):
         self.splitter.addWidget(self.table)
 
         # Detail view on the right
-        self.detail_label = QtWidgets.QLabel("Select an item to view details")
-        self.detail_label.setAlignment(QtCore.Qt.AlignTop | QtCore.Qt.AlignLeft)
-        self.detail_widget = QtWidgets.QWidget()
-        self.detail_layout = QtWidgets.QVBoxLayout()
-        self.detail_layout.addWidget(self.detail_label)
-        self.detail_widget.setLayout(self.detail_layout)
-        self.splitter.addWidget(self.detail_widget)
-
-        self.splitter.setStretchFactor(0, 4)
-        self.splitter.setStretchFactor(1, 1)
+        self.detail_widget = None
+        self.clear_detail()
         # self.splitter.setSizes([1,0])
 
         self.Bakeframe, frameLayout = self.createFrame(labelText="Bake UV")
@@ -1051,29 +1072,42 @@ class SaveXGenDesWindow(QtWidgets.QDialog):
 
         self.setLayout(main_layout)
 
-    def update_detail(self, index):
+    def clear_detail(self):
+        old_sizes = None
         if self.detail_widget is not None:
+            old_sizes = self.splitter.sizes()
             self.detail_widget.setParent(None)
-
-        content = self.contentList[index]
+        self.detail_label = QtWidgets.QLabel("Select an item to view details")
+        self.detail_label.setAlignment(QtCore.Qt.AlignTop | QtCore.Qt.AlignLeft)
         self.detail_widget = QtWidgets.QWidget()
         self.detail_layout = QtWidgets.QVBoxLayout()
+        self.detail_layout.addWidget(self.detail_label)
         self.detail_widget.setLayout(self.detail_layout)
+        self.splitter.addWidget(self.detail_widget)
+        # self.detail_widget.setMaximumWidth(1000)
+        if old_sizes is None:
+            self.splitter.setStretchFactor(0, 4)
+            self.splitter.setStretchFactor(1, 1)
+        else:
+            self.splitter.setSizes(old_sizes)
+
+    def update_detail(self, index):
+        self.clear_detail()
+        content = self.contentList[index]
         vBox = QtWidgets.QVBoxLayout()
         self.detail_layout.addLayout(vBox)
         vBox2 = QtWidgets.QVBoxLayout()
         self.detail_layout.addLayout(vBox2)
         vBox2.addStretch(1)
 
-        detail_label = QtWidgets.QLabel(content.showName)
-        detail_label.setStyleSheet('font-weight:bold;margin-bottom:20px')
-        detail_label.setAlignment(QtCore.Qt.AlignTop | QtCore.Qt.AlignCenter)  # 设置对齐方式
-        vBox.addWidget(detail_label)
+        self.detail_label.setText(content.showName)
+        self.detail_label.setStyleSheet('font-weight:bold;margin-bottom:20px')
+        self.detail_label.setAlignment(QtCore.Qt.AlignTop | QtCore.Qt.AlignCenter)  # 设置对齐方式
 
         write_spline_animation = QtWidgets.QCheckBox("write spline animation", self)
         write_spline_animation.setChecked(content.splineAnimation)
         write_spline_animation.setToolTip(
-            "Write spline animation, but not the animation of guides.")
+            "If writes animation, also write spline animation, not just the animation of guides.")
 
         def setWriteSplineAnimation(state):
             content.splineAnimation = state == 2
@@ -1104,9 +1138,7 @@ class SaveXGenDesWindow(QtWidgets.QDialog):
         vBox.addWidget(RegionPtex)
 
         self.splitter.addWidget(self.detail_widget)
-        self.detail_widget.setMaximumWidth(500)
-        self.splitter.setStretchFactor(0, 4)
-        self.splitter.setStretchFactor(1, 1)
+
 
     def pick_mesh(self):
         selectionList = om.MGlobal.getActiveSelectionList()
@@ -1171,6 +1203,7 @@ class SaveXGenDesWindow(QtWidgets.QDialog):
 
             timeIndex = archive.addTimeSampling(timeSampling)
         proxyList = []  # All Alembic content should be destroyed at the end of the method, otherwise it will not be written to the file
+        setGroomGuideIdStartIndex(0)
         for item in self.contentList:
             if item.export.isChecked():
                 fnDepNode = item.fnDepNode
@@ -1237,6 +1270,7 @@ class SaveXGenDesWindow(QtWidgets.QDialog):
         return file_path[0]
 
     def fillWithSelectList(self):
+        self.clear_detail()
         self.contentList = []
         selectionList = om.MGlobal.getActiveSelectionList()
         contentList = []
@@ -1299,7 +1333,6 @@ class SaveXGenDesWindow(QtWidgets.QDialog):
             self.MeshName.setText(f"Mesh: {mesh.name()}")
             self.combo.clear()
             self.combo.addItems(mesh.getUVSetNames())
-
 
 SaveXGenDesWindowInstanceName = '_SaveXGenDesWindowInstance'
 if SaveXGenDesWindowInstanceName not in globals():
