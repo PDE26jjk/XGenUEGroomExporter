@@ -132,11 +132,25 @@ def getXgenData(fnDepNode, keys):
                 outputs[k].append(array.array('i', decompressed_data))
     return [outputs[k] for k in keys]
 
+
+# %%
+class AbcType:
+    string = (abcGeom.OStringGeomParam, abcGeom.OStringGeomParamSample)
+    int16 = (abcGeom.OInt16GeomParam, abcGeom.OInt16GeomParamSample)
+    int32 = (abcGeom.OInt32GeomParam, abcGeom.OInt32GeomParamSample)
+    int64 = (abcGeom.OInt64GeomParam, abcGeom.OInt64GeomParamSample)
+    color3f = (abcGeom.OC3fGeomParam, abcGeom.OC3fGeomParamSample)
+    float = (abcGeom.OFloatGeomParam, abcGeom.OFloatGeomParamSample)
+    vector2f = (abcGeom.OV2fGeomParam, abcGeom.OV2fGeomParamSample)
+    vector3f = (abcGeom.OV3fGeomParam, abcGeom.OV3fGeomParamSample)
+
+
 # %%
 class CurvesProxy(object):
     def __init__(self, curveObj, fnDepNode, needRootList=False, animation=False):
         self.hairRootList = None
         self.schema = curveObj.getSchema()
+        self.cp = self.schema.getArbGeomParams()
         self.needRootList = needRootList
         self.animation = animation
         self.firstSamp = abcGeom.OCurvesSchemaSample()
@@ -146,23 +160,27 @@ class CurvesProxy(object):
         self.is_guide = False
         self.needBakeUV = False
 
-    def write_group_name(self, group_name):
-        cp = self.schema.getArbGeomParams()
-        groupName = abc.OStringArrayProperty(cp, "groom_group_name")
-        groupName.setValue(list2ImathArray([str(group_name)], imath.StringArray))
+    def write_param(self, name, abcType, data, scope=abcGeom.GeometryScope.kUniformScope, extent=1):
+        if len(data) == 1:
+            scope = abcGeom.GeometryScope.kConstantScope
+        param = abcType[0](self.cp, name, False, scope, extent)
+        sample = abcType[1](data, scope)
+        param.set(sample)
+
+    def write_group_name(self, group_name, write_card_id=False):
+        group_name_data = list2ImathArray([str(group_name)], imath.StringArray)
+        self.write_param('groom_group_name', AbcType.string, group_name_data)
+        if write_card_id:
+            self.write_param('groom_group_cards_id', AbcType.string, group_name_data)
         self.groupName = group_name
 
     def write_is_guide(self, is_guide=True):
-        self.is_guide = is_guide
-        cp = self.schema.getArbGeomParams()
+        self.isGuide = is_guide
         if is_guide:
-            guideFlag = abc.OInt16ArrayProperty(cp, "groom_guide")
-            guideFlag.setValue(list2ImathArray([1], imath.ShortArray))
+            self.write_param('groom_guide', AbcType.int16, list2ImathArray([1], imath.ShortArray))
 
     def write_group_id(self, group_id):
-        cp = self.schema.getArbGeomParams()
-        _id = abc.OInt32ArrayProperty(cp, "groom_group_id")
-        _id.setValue(list2ImathArray([group_id], imath.IntArray))
+        self.write_param('groom_group_id', AbcType.int32, list2ImathArray([group_id], imath.IntArray))
 
     def write_first_frame(self):
         itDag = om2.MItDag()
@@ -283,9 +301,7 @@ class CurvesProxy(object):
             uvs[i].x = res[0]
             uvs[i].y = res[1]
 
-        cp = self.schema.getArbGeomParams()
-        uv_prop = abc.OV2fArrayProperty(cp, "groom_root_uv")
-        uv_prop.setValue(uvs)
+        self.write_param('groom_root_uv', AbcType.vector2f, uvs)
 
 
 # %%
@@ -414,6 +430,7 @@ from ctypes import c_void_p, c_uint64, c_ulonglong, c_float, c_int, c_char_p
 
 PtexSamplerDllFuncName = "_PtexSamplerDllFunc"
 
+
 class PtexSampler(object):
     class DllFunc:
         @staticmethod
@@ -526,6 +543,7 @@ class PtexSampler(object):
         self.ptexFilterEvalFunc(self.filter, self.vector._Myfirst, 0, 3, faceId, faceU, faceV, 0, 0, 0, 0)
         return self.vector[:3]
 
+
 # %%
 class XGenProxyEveryFrame(CurvesProxy):
     def __init__(self, curveObj, descFnDepNode, needRootList=False,
@@ -560,7 +578,6 @@ class XGenProxyEveryFrame(CurvesProxy):
         self.numCVs = numCVs
         orders = imath.UnsignedCharArray(numCurves)
         nVertices = imath.IntArray(numCurves)
-        cp = self.schema.getArbGeomParams()
 
         samp = self.firstSamp
         samp.setBasis(abcGeom.BasisType.kBsplineBasis)
@@ -712,6 +729,7 @@ def getGroomGuideIdStartIndex():
 def setGroomGuideIdStartIndex(value=0):
     globals()[GroomGuideIdStartIndexName] = value
 
+
 # %%
 class GuideProxy(CurvesProxy):
     def __init__(self, curveObj, fnDepNode, needRootList=False, animation=False):
@@ -771,20 +789,16 @@ class GuideProxy(CurvesProxy):
 
         FaceUVList, FaceIdList = getXgenData(xgenSpline.firstSpline, ('FaceUV', 'FaceId'))
 
-        cp = self.schema.getArbGeomParams()
         guideIdStartIndex = getGroomGuideIdStartIndex()
         guideIdNextStartIndex = guideIdStartIndex + len(self.guides)
-        groom_id = abc.OInt32ArrayProperty(cp, "groom_id")
-        groom_id.setValue(list2ImathArray(list(range(guideIdStartIndex, guideIdNextStartIndex)), imath.IntArray))
+        groom_id_data = list2ImathArray(list(range(guideIdStartIndex, guideIdNextStartIndex)), imath.IntArray)
+        self.write_param("groom_id", AbcType.int32, groom_id_data)
 
-        cp = xgenSpline.schema.getArbGeomParams()
-        groom_weights = abc.OFloatArrayProperty(cp, "groom_guide_weights")
-        groom_guide_id = abc.OInt32ArrayProperty(cp, "groom_closest_guides")
         spline_num = len(xgenSpline.hairRootList)
-        weights = list2ImathArray([1.0] * spline_num, imath.FloatArray)
-        groom_weights.setValue(weights)
+        weight_data = list2ImathArray([1.0] * spline_num, imath.FloatArray)
+        xgenSpline.write_param("groom_guide_weights", AbcType.float, weight_data)
 
-        guide_ids = imath.IntArray(spline_num)
+        guide_id_data = imath.IntArray(spline_num)
         first_guide_name = om2.MFnDependencyNode(self.guides[0].node()).name()
         spline_index = 0
         for j in range(len(FaceIdList)):
@@ -796,22 +810,23 @@ class GuideProxy(CurvesProxy):
                 v = FaceUVData[i * 2 + 1]
                 color = ptexSampler.sampleData(u, v, faceId)
                 hash = color2Int(color)
-                guide_id = 0
+                guide_id = guideIdStartIndex
                 if hash not in guide_map:
                     print(
-                        "The spline index ({} ,{}) does not have a valid guide attached to {first_guide_name}.".format(
-                            j, i))
+                        "The spline index ({} ,{}) does not have a valid guide attached to {}.".format(
+                            j, i, first_guide_name))
                 else:
                     guide_id = guide_map[hash][1]
 
                 if spline_index >= spline_num:
                     raise Exception("spline_index >= spline_num")
-                guide_ids[spline_index] = guide_id
+                guide_id_data[spline_index] = guide_id
                 # guide_map[hash][2].append(spline_index)
                 spline_index += 1
         # print(guide_map)
         ptexSampler.close()
-        groom_guide_id.setValue(guide_ids)
+        xgenSpline.write_param("groom_closest_guides", AbcType.int32, guide_id_data)
+
         setGroomGuideIdStartIndex(guideIdNextStartIndex)
 
     def write_first_frame(self):
@@ -1053,6 +1068,10 @@ class SaveXGenDesWindow(QtWidgets.QDialog):
         self.createGroupId_cb.setChecked(True)
         hBox.addWidget(self.createGroupId_cb)
 
+        self.createCardId_cb = QtWidgets.QCheckBox("Create card id same as group name")
+        self.createCardId_cb.setChecked(False)
+        hBox.addWidget(self.createCardId_cb)
+
         frameLayout.addLayout(hBox)
 
         self.save_button = QtWidgets.QPushButton("Save Alembic File", self)
@@ -1142,7 +1161,6 @@ class SaveXGenDesWindow(QtWidgets.QDialog):
         vBox.addWidget(RegionPtex)
 
         self.splitter.addWidget(self.detail_widget)
-
 
     def pick_mesh(self):
         selectionList = om2.MGlobal.getActiveSelectionList()
@@ -1337,6 +1355,7 @@ class SaveXGenDesWindow(QtWidgets.QDialog):
             self.MeshName.setText("Mesh: {}".format(mesh.name()))
             self.combo.clear()
             self.combo.addItems(mesh.getUVSetNames())
+
 
 SaveXGenDesWindowInstanceName = '_SaveXGenDesWindowInstance'
 if SaveXGenDesWindowInstanceName not in globals():
