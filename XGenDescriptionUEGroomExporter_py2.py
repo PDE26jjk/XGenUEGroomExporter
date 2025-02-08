@@ -18,7 +18,7 @@ import uuid
 import xgenm as xg
 import os
 
-_XGenExporterVersion = "1.04"
+_XGenExporterVersion = "1.05"
 print_debug = False
 
 
