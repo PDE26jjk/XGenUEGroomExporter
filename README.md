@@ -21,6 +21,7 @@ Maya2025版本可用。[用法视频](https://www.bilibili.com/video/BV1U7mzYDEA
 - 增加py2版本，Maya2018可用。
 - knots端点处修复，解决UE导入报错
 - 新增XGenDescriptionUEGroomExporter.py，专门导出XGen Description。
+- XGenDescriptionUEGroomExporter列表中增添多选功能 2025-3-15
 
 ## XGenUEGroomExporter用法说明：
 

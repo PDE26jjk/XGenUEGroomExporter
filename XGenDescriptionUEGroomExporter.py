@@ -17,7 +17,7 @@ import uuid
 import xgenm as xg
 import os
 
-_XGenExporterVersion = "1.05"
+_XGenExporterVersion = "1.06"
 print_debug = False
 
 
@@ -886,19 +886,55 @@ class GuideProxy(CurvesProxy):
 # %%
 
 class SaveXGenDesWindow(QtWidgets.QDialog):
+    class MultiSelectCheckBox(QtWidgets.QCheckBox):
+        def __init__(self, column_name, parent=None):
+            super().__init__(parent)
+            self.column_name = column_name
+            self.clicked.connect(self.on_clicked)
+
+        def on_clicked(self, checked):
+            window = self.find_window()
+            if not window or not hasattr(window, 'table'):
+                return
+            table = window.table
+            contents = window.contentList
+            selected_rows = self.get_rows_to_changing(table)
+            for row in selected_rows:
+                if 0 <= row < len(contents):
+                    content = contents[row]
+                    checkbox = getattr(content, self.column_name)
+                    if checkbox is not None:
+                        checkbox.blockSignals(True)
+                        checkbox.setChecked(checked)
+                        checkbox.blockSignals(False)
+
+        def find_window(self):
+            parent = self.parent()
+            while parent:
+                if isinstance(parent, SaveXGenDesWindow):
+                    return parent
+                parent = parent.parent()
+            return None
+
+        def get_rows_to_changing(self, table):
+            pos = self.mapTo(table.viewport(), QtCore.QPoint(0, 0))
+            index = table.indexAt(pos)
+            selected_rows = [index.row() for index in table.selectionModel().selectedRows()]
+            return selected_rows if index.row() in selected_rows else [index.row()]
+
     class Content:
         def __init__(self, fnDepNode, showName, groupName, useGuide, bakeUV, animation, export):
             self.showName = showName
             self.fnDepNode = fnDepNode
             self.groupName = QtWidgets.QLineEdit()
             self.groupName.setText(groupName)
-            self.useGuide = QtWidgets.QCheckBox()
+            self.useGuide = SaveXGenDesWindow.MultiSelectCheckBox("useGuide")
             self.useGuide.setChecked(useGuide)
-            self.bakeUV = QtWidgets.QCheckBox()
+            self.bakeUV = SaveXGenDesWindow.MultiSelectCheckBox("bakeUV")
             self.bakeUV.setChecked(bakeUV)
-            self.animation = QtWidgets.QCheckBox()
+            self.animation = SaveXGenDesWindow.MultiSelectCheckBox("animation")
             self.animation.setChecked(animation)
-            self.export = QtWidgets.QCheckBox()
+            self.export = SaveXGenDesWindow.MultiSelectCheckBox("export")
             self.export.setChecked(export)
             self.splineAnimation = False
             self.writePtexGuideId = False
@@ -944,8 +980,8 @@ class SaveXGenDesWindow(QtWidgets.QDialog):
         hBox.setContentsMargins(10, 4, 10, 4)
         hBox.addWidget(label1)
 
-        self.fillWithSelectList_button = QtWidgets.QPushButton("Refresh selected")  # 刷新选择
-        self.fillWithSelectList_button.clicked.connect(self.fillWithSelectList)
+        self.fillWithSelectList_button = QtWidgets.QPushButton("Refresh selected")
+        self.fillWithSelectList_button.clicked.connect(self.fillTableWithSelectList)
         self.fillWithSelectList_button.setSizePolicy(QtWidgets.QSizePolicy.Maximum, QtWidgets.QSizePolicy.Maximum)
         # main_layout.addWidget(self.fillWithSelectList_button)
         hBox.addStretch(1)
@@ -966,7 +1002,7 @@ class SaveXGenDesWindow(QtWidgets.QDialog):
         self.table.setColumnWidth(6, 140)
         self.table.horizontalHeader().setSectionResizeMode(6, QtWidgets.QHeaderView.Fixed)
         self.table.horizontalHeader().setStretchLastSection(True)
-        self.table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        self.table.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)  # Multi Selection
         self.table.setSelectionBehavior(QtWidgets.QTableView.SelectRows)
 
         self.table.setStyleSheet("""
@@ -1072,10 +1108,10 @@ class SaveXGenDesWindow(QtWidgets.QDialog):
 
         self.save_button = QtWidgets.QPushButton("Save Alembic File", self)
         self.save_button.clicked.connect(self.save_abc)
-        self.clear_temp_button = QtWidgets.QPushButton("Clear Temp Data", self)  # 关闭
+        self.clear_temp_button = QtWidgets.QPushButton("Clear Temp Data", self)
         self.clear_temp_button.clicked.connect(self.clear_temp)
-        self.cancel_button = QtWidgets.QPushButton("Close", self)  # 关闭
-        self.cancel_button.clicked.connect(self.close)  # 关闭窗口
+        self.cancel_button = QtWidgets.QPushButton("Close", self)
+        self.cancel_button.clicked.connect(self.close)
 
         button_layout = QtWidgets.QHBoxLayout()
         button_layout.addWidget(self.save_button)
@@ -1110,53 +1146,68 @@ class SaveXGenDesWindow(QtWidgets.QDialog):
         else:
             self.splitter.setSizes(old_sizes)
 
+    def create_detail_checkBox(self, prop):
+        selected_rows = [index.row() for index in self.table.selectionModel().selectedRows()]
+        if len(selected_rows) == 0:
+            return None
+        checkBox = QtWidgets.QCheckBox(self)
+        isTrue = getattr(self.contentList[selected_rows[0]],prop)
+        checkBox.setChecked(isTrue)
+        for row in selected_rows:
+            content = self.contentList[row]
+            if getattr(content,prop) != isTrue:
+                checkBox.setCheckState(QtCore.Qt.CheckState.PartiallyChecked)
+                break
+
+        def onStateChange(state):
+            for row in selected_rows:
+                content = self.contentList[row]
+                setattr(content, prop, state == 2)
+
+        checkBox.stateChanged.connect(onStateChange)
+        return checkBox
+
     def update_detail(self, index):
         self.clear_detail()
         content = self.contentList[index]
+        is_multi_selected = len(self.table.selectionModel().selectedRows()) > 1
         vBox = QtWidgets.QVBoxLayout()
         self.detail_layout.addLayout(vBox)
         vBox2 = QtWidgets.QVBoxLayout()
         self.detail_layout.addLayout(vBox2)
         vBox2.addStretch(1)
 
-        self.detail_label.setText(content.showName)
+        self.detail_label.setText(content.showName if not is_multi_selected else "--")
         self.detail_label.setStyleSheet('font-weight:bold;margin-bottom:20px')
         self.detail_label.setAlignment(QtCore.Qt.AlignTop | QtCore.Qt.AlignCenter)  # 设置对齐方式
 
-        write_spline_animation = QtWidgets.QCheckBox("write spline animation", self)
-        write_spline_animation.setChecked(content.splineAnimation)
+        write_spline_animation = self.create_detail_checkBox('splineAnimation')
+        write_spline_animation.setText("write spline animation")
         write_spline_animation.setToolTip(
             "If writes animation, also write spline animation, not just the animation of guides.")
 
-        def setWriteSplineAnimation(state):
-            content.splineAnimation = state == 2
-
-        write_spline_animation.stateChanged.connect(setWriteSplineAnimation)
         vBox.addWidget(write_spline_animation)
 
-        write_guide_id_cb = QtWidgets.QCheckBox("write guide id from ptex", self)
-        write_guide_id_cb.setChecked(content.writePtexGuideId)
+        write_guide_id_cb = self.create_detail_checkBox('writePtexGuideId')
+        write_guide_id_cb.setText("write guide id from ptex")
         write_guide_id_cb.setToolTip(
             "Experimental feature, only supports versions up to UE5.3, writes properties such as groom_closest_guides.")
 
         # vBox.setContentsMargins(0,0,10,10)
-        def setWriteGuideId(state):
-            content.writePtexGuideId = state == 2
-
-        write_guide_id_cb.stateChanged.connect(setWriteGuideId)
         vBox.addWidget(write_guide_id_cb)
-        label = QtWidgets.QLabel('Select .ptx file:')
-        # label.setStyleSheet('font-size:16px')
-        vBox.addWidget(label)
 
-        def setPath(text):
-            content.regionPtex = text
+        if not is_multi_selected:
+            label = QtWidgets.QLabel('Select .ptx file:')
+            # label.setStyleSheet('font-size:16px')
+            vBox.addWidget(label)
+            def setPath(text):
+                content.regionPtex = text
 
-        RegionPtex = FileSelectorWidget(setPath)
-        RegionPtex.set_file_path(content.regionPtex)
-        vBox.addWidget(RegionPtex)
+            RegionPtex = FileSelectorWidget(setPath)
+            RegionPtex.set_file_path(content.regionPtex)
+            vBox.addWidget(RegionPtex)
 
-        self.splitter.addWidget(self.detail_widget)
+            self.splitter.addWidget(self.detail_widget)
 
     def pick_mesh(self):
         selectionList = om.MGlobal.getActiveSelectionList()
@@ -1287,7 +1338,7 @@ class SaveXGenDesWindow(QtWidgets.QDialog):
         om.MGlobal.setActiveSelectionList(selectionList)
         return file_path[0]
 
-    def fillWithSelectList(self):
+    def fillTableWithSelectList(self):
         self.clear_detail()
         self.contentList = []
         selectionList = om.MGlobal.getActiveSelectionList()
@@ -1351,6 +1402,7 @@ class SaveXGenDesWindow(QtWidgets.QDialog):
             self.MeshName.setText(f"Mesh: {mesh.name()}")
             self.combo.clear()
             self.combo.addItems(mesh.getUVSetNames())
+
 
 
 SaveXGenDesWindowInstanceName = '_SaveXGenDesWindowInstance'
