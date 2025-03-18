@@ -915,7 +915,8 @@ class SaveXGenDesWindow(QtWidgets.QDialog):
         def find_window(self):
             parent = self.parent()
             while parent:
-                if isinstance(parent, SaveXGenDesWindow):
+                if (isinstance(parent, SaveXGenDesWindow) or
+                        parent.__class__.__name__ == 'SaveXGenDesWindow'):
                     return parent
                 parent = parent.parent()
             return None

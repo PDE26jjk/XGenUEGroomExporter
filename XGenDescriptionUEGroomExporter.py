@@ -911,16 +911,17 @@ class SaveXGenDesWindow(QtWidgets.QDialog):
         def find_window(self):
             parent = self.parent()
             while parent:
-                if isinstance(parent, SaveXGenDesWindow):
+                if (isinstance(parent, SaveXGenDesWindow) or
+                        parent.__class__.__name__ == 'SaveXGenDesWindow'):
                     return parent
                 parent = parent.parent()
             return None
 
         def get_rows_to_changing(self, table):
             pos = self.mapTo(table.viewport(), QtCore.QPoint(0, 0))
-            index = table.indexAt(pos)
+            _index = table.indexAt(pos).row()
             selected_rows = [index.row() for index in table.selectionModel().selectedRows()]
-            return selected_rows if index.row() in selected_rows else [index.row()]
+            return selected_rows if _index in selected_rows else [_index]
 
     class Content:
         def __init__(self, fnDepNode, showName, groupName, useGuide, bakeUV, animation, export):
