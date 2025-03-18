@@ -1030,7 +1030,8 @@ class SaveXGenDesWindow(QtWidgets.QDialog):
 
         self.splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
 
-        self.table.cellClicked.connect(self.update_detail)
+        # self.table.cellClicked.connect(self.update_detail)
+        self.table.selectionModel().selectionChanged.connect(self.update_detail)
         self.splitter.addWidget(self.table)
 
         # Detail view on the right
@@ -1172,9 +1173,12 @@ class SaveXGenDesWindow(QtWidgets.QDialog):
         checkBox.stateChanged.connect(onStateChange)
         return checkBox
 
-    def update_detail(self, index):
+    def update_detail(self, indices):
         self.clear_detail()
-        content = self.contentList[index]
+        selected_rows = [index.row() for index in self.table.selectionModel().selectedRows()]
+        if len(selected_rows) == 0:
+            return
+        content = self.contentList[selected_rows[0]]
         is_multi_selected = len(self.table.selectionModel().selectedRows()) > 1
         vBox = QtWidgets.QVBoxLayout()
         self.detail_layout.addLayout(vBox)
