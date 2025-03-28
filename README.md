@@ -1,7 +1,7 @@
 # XGenUEGroomExporter
-A small tool to export XGen to UE Groom. Select curves and interactive XGen descriptions to export an abc file.
+A small tool to export XGen to UE Groom. Select curves and interactive XGen descriptions to export an abc file. The new script can directly export XGen descriptions with guides.
 
-选择曲线和可交互XGen描述，可以导出abc文件。带分组，可以烘焙UV。UE5可识别。
+选择曲线和可交互XGen描述，可以导出abc文件。带分组，可以烘焙UV。UE5可识别。新脚本可以直接导出带有导向的XGen描述。
 
 ![image-20241108002757544](https://raw.githubusercontent.com/PDE26jjk/misc/main/img/image-20241108002757544.png)
 
