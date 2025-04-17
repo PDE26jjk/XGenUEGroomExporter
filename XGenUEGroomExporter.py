@@ -268,7 +268,7 @@ class CurvesProxy:
 
         self.schema.set(samp)
 
-    def back_uv(self, bakeMesh: om.MFnMesh, uv_set: str = None):
+    def bake_uv(self, bakeMesh: om.MFnMesh, uv_set: str = None):
         if self.hairRootList is None:
             return
         if bakeMesh is None:
@@ -360,7 +360,7 @@ class XGenProxy(CurvesProxy):
         samp.setKnots(list2ImathArray(knots, imath.FloatArray))
         samp.setOrders(orders)
 
-        # back vertex color example
+        # bake vertex color example
         # cvColor = abcGeom.OC3fGeomParam(cp, "groom_color", False, abcGeom.GeometryScope.kVertexScope, 1)
         # cvColorArray = imath.C3fArray(len(pointslist) // 3)
         # i = 0
@@ -743,12 +743,12 @@ class SaveXGenWindow(QtWidgets.QDialog):
                         item.write_first_frame()
                     elif item.animation:
                         item.write_frame()
-                    item.back_uv(self.bakeMesh, self.uvSetStr.text())
+                    item.bake_uv(self.bakeMesh, self.uvSetStr.text())
             omAnim.MAnimControl.setCurrentTime(oldCurTime)
         else:
             for item in proxyList:
                 item.write_first_frame()
-                item.back_uv(self.bakeMesh, self.uvSetStr.text())
+                item.bake_uv(self.bakeMesh, self.uvSetStr.text())
         print("Data has been saved in %s, it took %.2f seconds." % (file_path[0], time.time() - startTime))
 
         return file_path[0]
