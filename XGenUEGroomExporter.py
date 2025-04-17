@@ -743,12 +743,12 @@ class SaveXGenWindow(QtWidgets.QDialog):
                         item.write_first_frame()
                     elif item.animation:
                         item.write_frame()
-                    item.bake_uv(self.bakeMesh, self.uvSetStr.text())
             omAnim.MAnimControl.setCurrentTime(oldCurTime)
         else:
             for item in proxyList:
                 item.write_first_frame()
-                item.bake_uv(self.bakeMesh, self.uvSetStr.text())
+        for item in proxyList:
+            item.bake_uv(self.bakeMesh, self.uvSetStr.text())
         print("Data has been saved in %s, it took %.2f seconds." % (file_path[0], time.time() - startTime))
 
         return file_path[0]
