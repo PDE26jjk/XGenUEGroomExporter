@@ -17,7 +17,7 @@ import uuid
 import xgenm as xg
 import os
 
-_XGenExporterVersion = "1.06"
+_XGenExporterVersion = "1.07"
 print_debug = False
 
 
@@ -1200,6 +1200,32 @@ class SaveXGenDesWindow(QtWidgets.QDialog):
 
         # vBox.setContentsMargins(0,0,10,10)
         vBox.addWidget(write_guide_id_cb)
+
+        if is_multi_selected:
+            group_name_multi_edit = QtWidgets.QLineEdit()
+
+            names_are_same = True
+            group_name = content.groupName.text()
+            for selected_row in selected_rows[1:]:
+                if self.contentList[selected_row].groupName.text() != group_name:
+                    names_are_same = False
+                    break
+            if names_are_same:
+                group_name_multi_edit.setText(group_name)
+            else:
+                group_name_multi_edit.setPlaceholderText(" -- ")
+
+            def change_group_name(text):
+                for selected_row in selected_rows:
+                    self.contentList[selected_row].groupName.setText(text)
+
+            group_name_multi_edit.textEdited.connect(change_group_name)
+            hBox = QtWidgets.QHBoxLayout()
+            group_name_label = QtWidgets.QLabel("Group name: ")
+            hBox.addWidget(group_name_label)
+            hBox.addWidget(group_name_multi_edit)
+            vBox.addLayout(hBox)
+
 
         if not is_multi_selected:
             label = QtWidgets.QLabel('Select .ptx file:')
