@@ -18,7 +18,7 @@ import uuid
 import xgenm as xg
 import os
 
-_XGenExporterVersion = "1.07"
+_XGenExporterVersion = "1.08"
 print_debug = False
 
 
@@ -414,10 +414,18 @@ def ConvertToInteractive(dn):
     else:
         path = om2.MDagPath.getAPathTo(dn.object())
     cmds.select(path, replace=True)
-    res = cmds.xgmGroomConvert(prefix="z" + generate_short_hash())
-    if res is None:
+    prefix = "z" + generate_short_hash()
+    res = cmds.xgmGroomConvert(prefix=prefix)
+    if res is None or len(res) == 0:
         raise Exception("Convert to interactive failed.")
     sel = om2.MGlobal.getActiveSelectionList()
+
+    if not res[0].startswith(prefix):
+        fnDepNode = om2.MFnDependencyNode(sel.getDependNode(0))
+        if not fnDepNode.object().hasFn(om2.MFn.kTransform):
+            fnDepNode = om2.MFnDependencyNode(om2.MFnDagNode(fnDepNode.object()).parent(0))
+        fnDepNode.setName('_'.join((prefix, fnDepNode.name())))
+
     spline = om2.MFnDagNode(sel.getDagPath(0))
     om2.MFnDagNode(getSaveXGenDesWindowParent()).addChild(spline.parent(0))
     return spline

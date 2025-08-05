@@ -17,7 +17,7 @@ import uuid
 import xgenm as xg
 import os
 
-_XGenExporterVersion = "1.07"
+_XGenExporterVersion = "1.08"
 print_debug = False
 
 
@@ -412,10 +412,18 @@ def ConvertToInteractive(dn: om.MFnDependencyNode):
     else:
         path = om.MDagPath.getAPathTo(dn.object())
     cmds.select(path, replace=True)
-    res = cmds.xgmGroomConvert(prefix="z" + generate_short_hash())
-    if res is None:
+    prefix = "z" + generate_short_hash()
+    res = cmds.xgmGroomConvert(prefix=prefix)
+    if res is None or len(res) == 0:
         raise Exception("Convert to interactive failed.")
     sel: om.MSelectionList = om.MGlobal.getActiveSelectionList()
+
+    if not res[0].startswith(prefix):
+        fnDepNode = om.MFnDependencyNode(sel.getDependNode(0))
+        if not fnDepNode.object().hasFn(om.MFn.kTransform):
+            fnDepNode = om.MFnDependencyNode(om.MFnDagNode(fnDepNode.object()).parent(0))
+        fnDepNode.setName('_'.join((prefix, fnDepNode.name())))
+
     spline = om.MFnDagNode(sel.getDagPath(0))
     om.MFnDagNode(getSaveXGenDesWindowParent()).addChild(spline.parent(0))
     return spline
@@ -1153,11 +1161,11 @@ class SaveXGenDesWindow(QtWidgets.QDialog):
         if len(selected_rows) == 0:
             return None
         checkBox = QtWidgets.QCheckBox(self)
-        isTrue = getattr(self.contentList[selected_rows[0]],prop)
+        isTrue = getattr(self.contentList[selected_rows[0]], prop)
         checkBox.setChecked(isTrue)
         for row in selected_rows:
             content = self.contentList[row]
-            if getattr(content,prop) != isTrue:
+            if getattr(content, prop) != isTrue:
                 checkBox.setCheckState(QtCore.Qt.CheckState.PartiallyChecked)
                 break
 
@@ -1226,11 +1234,11 @@ class SaveXGenDesWindow(QtWidgets.QDialog):
             hBox.addWidget(group_name_multi_edit)
             vBox.addLayout(hBox)
 
-
         if not is_multi_selected:
             label = QtWidgets.QLabel('Select .ptx file:')
             # label.setStyleSheet('font-size:16px')
             vBox.addWidget(label)
+
             def setPath(text):
                 content.regionPtex = text
 
@@ -1435,9 +1443,8 @@ class SaveXGenDesWindow(QtWidgets.QDialog):
             self.combo.addItems(mesh.getUVSetNames())
 
 
-
 SaveXGenDesWindowInstanceName = '_SaveXGenDesWindowInstance'
-if SaveXGenDesWindowInstanceName not in globals():
+if SaveXGenDesWindowInstanceName in globals():
     globals()[SaveXGenDesWindowInstanceName] = SaveXGenDesWindow()
 globals()[SaveXGenDesWindowInstanceName].show()
 # SaveXGenDesWindow().show()
