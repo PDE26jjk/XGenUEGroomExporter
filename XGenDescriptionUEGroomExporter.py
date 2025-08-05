@@ -1444,7 +1444,7 @@ class SaveXGenDesWindow(QtWidgets.QDialog):
 
 
 SaveXGenDesWindowInstanceName = '_SaveXGenDesWindowInstance'
-if SaveXGenDesWindowInstanceName in globals():
+if SaveXGenDesWindowInstanceName not in globals():
     globals()[SaveXGenDesWindowInstanceName] = SaveXGenDesWindow()
 globals()[SaveXGenDesWindowInstanceName].show()
 # SaveXGenDesWindow().show()
