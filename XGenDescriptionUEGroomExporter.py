@@ -16,8 +16,9 @@ import struct
 import uuid
 import xgenm as xg
 import os
+import itertools
 
-_XGenExporterVersion = "1.08"
+_XGenExporterVersion = "1.09"
 print_debug = False
 
 
@@ -556,7 +557,7 @@ class XGenProxyEveryFrame(CurvesProxy):
                  animation=False):
         super().__init__(curveObj, None, needRootList, animation)
         self.descFnDepNode = descFnDepNode
-        self.order_offset_map = None
+        self.sorted_offset_map = None
 
     def write_first_frame(self):
         if print_debug:
@@ -571,6 +572,9 @@ class XGenProxyEveryFrame(CurvesProxy):
                                                                                                      'WIDTH_CV',
                                                                                                      'FaceId',
                                                                                                      'FaceUV'))
+        # calculate sorted order first
+        index2order = self.get_index2order(FaceIdList, FaceUVList)
+        self.firstSplineIndex2order = index2order
         if print_debug:
             print("getXgenData: %.4f" % (time.time() - startTime))
             startTime = time.time()
@@ -579,7 +583,10 @@ class XGenProxyEveryFrame(CurvesProxy):
         for i, PrimitiveInfos in enumerate(PrimitiveInfosList):
             numCurves += len(PrimitiveInfos)
             for PrimitiveInfo in PrimitiveInfos:
-                numCVs += PrimitiveInfo[1]
+                length = int(PrimitiveInfo[1])
+                if length < 2:
+                    continue
+                numCVs += length
         self.numCurves = numCurves
         self.numCVs = numCVs
         orders = imath.UnsignedCharArray(numCurves)
@@ -594,12 +601,27 @@ class XGenProxyEveryFrame(CurvesProxy):
         pointArray = imath.V3fArray(numCVs)
         widthArray = imath.FloatArray(numCVs)
         if self.needRootList:
-            self.hairRootList = []
-        knots = []
+            self.hairRootList = [None] * numCurves
+        knots = [None] * numCurves
 
         curveIndex = 0
-        cvIndex = 0
-        cvOffsets = imath.IntArray(numCurves)
+        # cvIndex = 0
+        # cvOffsets = imath.IntArray(numCurves)
+        curvelengths = imath.IntArray(numCurves)
+
+        for j in range(len(PrimitiveInfosList)):
+            PrimitiveInfos = PrimitiveInfosList[j]
+            for i, PrimitiveInfo in enumerate(PrimitiveInfos):
+                length = int(PrimitiveInfo[1])
+                if length < 2:
+                    continue
+                curvelengths[index2order[curveIndex]] = length
+                curveIndex += 1
+
+        self.sorted_offset_map = [0] + list(itertools.accumulate(curvelengths))
+
+        curveIndex = 0
+        # cvOffsets = imath.IntArray(numCurves)
         for j in range(len(PrimitiveInfosList)):
             PrimitiveInfos = PrimitiveInfosList[j]
             posData = PositionsDataList[j]
@@ -610,26 +632,29 @@ class XGenProxyEveryFrame(CurvesProxy):
                 if length < 2:
                     continue
                 startAddr = offset * 3
-                cvOffsets[curveIndex] = cvIndex
+                sortedCurveIndex = index2order[curveIndex]
+                # cvOffsets[curveIndex] = cvIndex
+                cvIndex = self.sorted_offset_map[sortedCurveIndex]
                 for k in range(length):
                     pointArray[cvIndex].x = posData[startAddr]
                     pointArray[cvIndex].y = posData[startAddr + 1]
                     pointArray[cvIndex].z = posData[startAddr + 2]
                     if k == 0 and self.needRootList:
-                        self.hairRootList.append(om.MPoint(pointArray[cvIndex]))
+                        self.hairRootList[sortedCurveIndex] = om.MPoint(pointArray[cvIndex])
                     widthArray[cvIndex] = widthData[offset + k]
                     startAddr += 3
                     cvIndex += 1
 
-                orders[curveIndex] = degree + 1
-                nVertices[curveIndex] = length
+                orders[sortedCurveIndex] = degree + 1
+                nVertices[sortedCurveIndex] = length
 
                 knotsInsideNum = length - degree + 1
                 knotsList = [*([0] * degree), *list(range(knotsInsideNum)),
                              *([knotsInsideNum - 1] * degree)]  # The endpoint repeats one more than Maya
                 # print(knotsList)
-                knots += knotsList
+                knots[sortedCurveIndex] = knotsList
                 curveIndex += 1
+        knots = list(itertools.chain(*knots))
 
         samp.setCurvesNumVertices(nVertices)
         samp.setPositions(pointArray)
@@ -639,11 +664,11 @@ class XGenProxyEveryFrame(CurvesProxy):
         widths = abcGeom.OFloatGeomParamSample(widthArray, abcGeom.GeometryScope.kVertexScope)
         samp.setWidths(widths)
         self.schema.set(samp)
-        if self.animation:
-            index2order = self.get_index2order(FaceIdList, FaceUVList)
-            self.order_offset_map = imath.IntArray(numCurves)
-            for i, offset in zip(index2order, cvOffsets):
-                self.order_offset_map[i] = offset
+        # if self.animation:
+        #     index2order = self.get_index2order(FaceIdList, FaceUVList)
+        #     self.order_offset_map = imath.IntArray(numCurves)
+        #     for i, offset in zip(index2order, cvOffsets):
+        #         self.order_offset_map[i] = offset
         if print_debug:
             # print(self.order_offset_map)
             print("write_first_frame: %.4f" % (time.time() - startTime))
@@ -705,7 +730,7 @@ class XGenProxyEveryFrame(CurvesProxy):
                 if length < 2:
                     continue
                 startAddr = offset * 3
-                cvIndex = self.order_offset_map[index2order[curveIndex]]
+                cvIndex = self.sorted_offset_map[index2order[curveIndex]]
                 for k in range(length):
                     pointArray[cvIndex].x = posData[startAddr]
                     pointArray[cvIndex].y = posData[startAddr + 1]
@@ -824,13 +849,13 @@ class GuideProxy(CurvesProxy):
 
                 if spline_index >= spline_num:
                     raise Exception("spline_index >= spline_num")
-                guide_id_data[spline_index] = guide_id
+                sorted_spine_index = xgenSpline.firstSplineIndex2order[spline_index]
+                guide_id_data[sorted_spine_index] = guide_id
                 # guide_map[hash][2].append(spline_index)
                 spline_index += 1
         # print(guide_map)
         ptexSampler.close()
         xgenSpline.write_param("groom_closest_guides", AbcType.int32, guide_id_data)
-
         setGroomGuideIdStartIndex(guideIdNextStartIndex)
 
     def write_first_frame(self):
