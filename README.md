@@ -23,6 +23,10 @@ Maya2025版本可用。[用法视频](https://www.bilibili.com/video/BV1U7mzYDEA
 - 新增XGenDescriptionUEGroomExporter.py，专门导出XGen Description。
 - XGenDescriptionUEGroomExporter列表中增添多选功能 2025-3-15
 
+## 已知问题：
+
+- XGenDescriptionUEGroomExporter导出的缓存数据有概率因为顶点数量每帧对不上，而无法导入UE，这是因为脚本目前是先转成交互式XGen再导出，顶点数量可能会有出入。应该可以用一些插值算法重新采样每根发丝让他们一致，但我现在没有精力写这个，感兴趣的朋友可以研究一下。
+
 ## XGenUEGroomExporter用法说明：
 
 ![image-20250114225246322](https://raw.githubusercontent.com/PDE26jjk/misc/main/img/image-20250114225246322.png)
@@ -63,6 +67,10 @@ After selecting the curves and interactive XGen descriptions, click the **Refres
 **UV Baking**: It will recognize the bound mesh of the XGen description; you can select another mesh by clicking **Pick Other Mesh**.
 
 Once **Animation** is selected, animated data can be exported, with the frame range to be set in the **Animation** tab. If **Preroll** is checked, it will play from the first frame to the start of the frame range before recording the animation.
+
+## Known Issues:
+
+- There is a chance that cached data exported by XGenDescriptionUEGroomExporter cannot be imported into UE due to inconsistent vertex counts per frame. This occurs because the script currently converts to interactive XGen before exporting, which may cause variations in vertex numbers. It should be possible to resample each strand using interpolation algorithms to align them, but I currently lack the capacity to implement this. Anyone interested is encouraged to explore this further.
 
 ## Usage Instructions for XGenDescriptionUEGroomExporter:
 
