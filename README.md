@@ -12,6 +12,10 @@ Maya2025版本可用。[用法视频](https://www.bilibili.com/video/BV1U7mzYDEA
 微信: XJ845077205  
 邮箱: 26jjk@sina.com
 
+
+<h2 style="color: red;"><strong>_py2版本的脚本面向Maya2018或以下的使用python2的版本！新版Maya请使用不带_py2的脚本！！！</strong></h2>
+
+
 ## 更新功能：
 
 - 无需numpy也可以使用

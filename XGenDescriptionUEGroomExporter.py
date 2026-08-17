@@ -1320,6 +1320,7 @@ class SaveXGenDesWindow(QtWidgets.QDialog):
                 hasAnimation = item.animation.isChecked()
                 if hasAnimation:
                     anyAnimation = True
+                    break
 
         if anyAnimation:
             frameRange = [int(self.startFrame.text()), int(self.endFrame.text())]
