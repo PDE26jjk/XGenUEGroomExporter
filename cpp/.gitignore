@@ -1,0 +1,10 @@
+build/
+third_party/
+out/
+.vs/
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.o
