@@ -578,6 +578,63 @@ def _xgc_i32(_values):
     return _arr
 
 
+import maya.OpenMaya as _xgc_om1
+
+_xgc_zero_serialization = False
+
+
+def _xgc_mpxdata_addr(_fnDepNode):
+    # Legacy OpenMaya exposes the raw MPxData* via .this (API 2.0 does not).
+    try:
+        _sel = _xgc_om1.MSelectionList()
+        _sel.add(_fnDepNode.name())
+        _dp = _xgc_om1.MDagPath()
+        _sel.getDagPath(0, _dp)
+        _plug = _xgc_om1.MFnDependencyNode(_dp.node()).findPlug(
+            "outSplineData", False)
+        _pd = _xgc_om1.MFnPluginData(_plug.asMObject()).data()
+        return int(_pd.this)
+    except Exception:
+        return 0
+
+
+def _xgc_probe_zero_serialization(_fnDepNode):
+    global _xgc_zero_serialization
+    _xgc_zero_serialization = False
+    if not _xgc_available:
+        return False
+    _addr = _xgc_mpxdata_addr(_fnDepNode)
+    if not _addr:
+        return False
+    _ok = _xgc_ctypes.c_int(0)
+    try:
+        _rc = _xgc_dll.xg_read_xgen_probe(_addr, _xgc_ctypes.byref(_ok))
+    except Exception:
+        return False
+    if _rc != 0 or not _ok.value:
+        return False
+    _xgc_zero_serialization = True
+    return True
+
+
+def _xgc_write_memory_first(_object_handle, _fnDepNode, _group_name,
+                            _is_guide, _group_id):
+    _addr = _xgc_mpxdata_addr(_fnDepNode)
+    if not _addr:
+        raise RuntimeError("xgcore: cannot resolve the MPxData address")
+    _xgc_check(_xgc_dll.xg_abc_write_xgen_memory_first(
+        _object_handle, _addr, _xgc_encode(_group_name), int(_is_guide),
+        int(_group_id)), "xg_abc_write_xgen_memory_first")
+
+
+def _xgc_write_memory_frame(_object_handle, _fnDepNode, _time):
+    _addr = _xgc_mpxdata_addr(_fnDepNode)
+    if not _addr:
+        raise RuntimeError("xgcore: cannot resolve the MPxData address")
+    _xgc_check(_xgc_dll.xg_abc_write_xgen_memory_frame(
+        _object_handle, _addr, _time), "xg_abc_write_xgen_memory_frame")
+
+
 class _XgParseInfo(_xgc_ctypes.Structure):
     _fields_ = [
         ("num_curves", _xgc_ctypes.c_int64),
@@ -645,6 +702,19 @@ def _xgc_load(_force=False):
             _xgc_ctypes.c_int, _xgc_ctypes.c_char_p, _xgc_ctypes.c_size_t,
             _xgc_ctypes.c_double]
         _dll.xg_abc_write_frame.restype = _xgc_ctypes.c_int
+
+        _dll.xg_read_xgen_probe.argtypes = [
+            _xgc_ctypes.c_uint64, _xgc_ctypes.POINTER(_xgc_ctypes.c_int)]
+        _dll.xg_read_xgen_probe.restype = _xgc_ctypes.c_int
+
+        _dll.xg_abc_write_xgen_memory_first.argtypes = [
+            _xgc_ctypes.c_int, _xgc_ctypes.c_uint64, _xgc_ctypes.c_char_p,
+            _xgc_ctypes.c_int, _xgc_ctypes.c_int]
+        _dll.xg_abc_write_xgen_memory_first.restype = _xgc_ctypes.c_int
+
+        _dll.xg_abc_write_xgen_memory_frame.argtypes = [
+            _xgc_ctypes.c_int, _xgc_ctypes.c_uint64, _xgc_ctypes.c_double]
+        _dll.xg_abc_write_xgen_memory_frame.restype = _xgc_ctypes.c_int
 
         _dll.xg_abc_write_curves_first.argtypes = [
             _xgc_ctypes.c_int,
@@ -953,8 +1023,18 @@ class CppCurvesProxy(object):
 class CppXGenProxy(CppCurvesProxy):
     def __init__(self, _object_handle, _fnDepNode, _needBakeUV=False, _animation=False):
         CppCurvesProxy.__init__(self, _object_handle, _fnDepNode, _needBakeUV, _animation)
+        self._xgc_use_memory = False
 
     def write_first_frame(self):
+        self._xgc_use_memory = False
+        if not self.needBakeUV:
+            if _xgc_probe_zero_serialization(self.fnDepNode):
+                _xgc_write_memory_first(self.object_handle, self.fnDepNode,
+                                        "", 0, -1)
+                self._xgc_use_memory = True
+                print("xgcore: zero-serialization direct memory read")
+                return
+            print("xgcore: zero-serialization unavailable, using serialized path")
         raw = getXgenRawData(self.fnDepNode)
         _xgc_write_first(self.object_handle, raw)
         if self.needBakeUV:
@@ -964,8 +1044,11 @@ class CppXGenProxy(CppCurvesProxy):
                 self.hairRootList.append(om.MPoint(_roots[i * 3], _roots[i * 3 + 1], _roots[i * 3 + 2]))
 
     def write_frame(self):
-        raw = getXgenRawData(self.fnDepNode)
-        _xgc_write_frame(self.object_handle, raw)
+        if self._xgc_use_memory:
+            _xgc_write_memory_frame(self.object_handle, self.fnDepNode, 0.0)
+        else:
+            raw = getXgenRawData(self.fnDepNode)
+            _xgc_write_frame(self.object_handle, raw)
 
 
 # %%
