@@ -19,7 +19,7 @@ import os
 import itertools
 
 _XGenExporterVersion = "1.09"
-print_debug = False
+print_debug = True
 
 
 # %%
@@ -46,8 +46,14 @@ def getXgenData(fnDepNode: om.MFnDependencyNode, keys):
     handle: om.MDataHandle = splineData.asMObject()
     mdata = om.MFnPluginData(handle)
     mData = mdata.data()
+    if print_debug:
+        startTime = time.time()
+
 
     rawData = mData.writeBinary()
+    if print_debug:
+        print("writeBinary: %.4f" % (time.time() - startTime))
+        startTime = time.time()
 
     def GetBlocks(bype_data):
         address = 0
@@ -129,6 +135,9 @@ def getXgenData(fnDepNode: om.MFnDependencyNode, keys):
             for addr in v:
                 decompressed_data = decompressData(*addr)
                 outputs[k].append(array.array('i', decompressed_data))
+    if print_debug:
+        print("flatten: %.4f" % (time.time() - startTime))
+        startTime = time.time()
     return [outputs[k] for k in keys]
 
 
@@ -293,13 +302,17 @@ class CurvesProxy:
             uv_set = bakeMesh.currentUVSetName()
         elif uv_set not in bakeMesh.getUVSetNames():
             raise Exception(f'Invalid UV Set : {uv_set}')
+        if print_debug:
+            startTime = time.time()
 
         uvs = imath.V2fArray(len(self.hairRootList))
         for i, hairRoot in enumerate(self.hairRootList):
             res = bakeMesh.getUVAtPoint(hairRoot, om.MSpace.kWorld, uvSet=uv_set)
             uvs[i].x = res[0]
             uvs[i].y = res[1]
-
+        if print_debug:
+            print("bake uv: %.4f" % (time.time() - startTime))
+            startTime = time.time()
         self.write_param('groom_root_uv', AbcType.vector2f, uvs)
 
 
@@ -564,6 +577,9 @@ class XGenProxyEveryFrame(CurvesProxy):
             startTime = time.time()
 
         spline = ConvertToInteractive(self.descFnDepNode)
+        if print_debug:
+            print("ConvertToInteractive: %.4f" % (time.time() - startTime))
+            startTime = time.time()
         self.fnDepNode = spline
         self.firstSpline = spline
         PrimitiveInfosList, PositionsDataList, WidthsDataList, FaceIdList, FaceUVList = getXgenData(self.fnDepNode,
@@ -917,6 +933,640 @@ class GuideProxy(CurvesProxy):
 
 
 # %%
+# --- C++ acceleration wrapper (embedded; single-file delivery) ------------
+# Python 2.7 / 3.x compatible. Loads xgcore.dll through ctypes and exposes
+# CppArchive / CppCurvesProxy / CppGuideProxy / CppXGenProxyEveryFrame
+# mirroring the
+# Python proxy classes. Only active when the DLL is found; otherwise the
+# original pure-Python export path stays the default and the checkbox is
+# disabled.
+
+import ctypes as _xgc_ctypes
+import os as _xgc_os
+
+_xgc_available = False
+_xgc_dll = None
+_xgc_error = ""
+
+
+def _xgc_find_dll():
+    candidates = []
+    _script_file = globals().get('__file__')
+    if _script_file:
+        candidates.append(_xgc_os.path.dirname(_xgc_os.path.abspath(_script_file)))
+    try:
+        candidates.append(cmds.internalVar(userScriptDir=True))
+    except Exception:
+        pass
+    candidates.append(_xgc_os.getcwd())
+    for _p in _xgc_os.environ.get("PATH", "").split(_xgc_os.pathsep):
+        if _p:
+            candidates.append(_p)
+    _seen = set()
+    for _d in candidates:
+        try:
+            _d = _xgc_os.path.abspath(_d)
+        except Exception:
+            continue
+        if _d in _seen:
+            continue
+        _seen.add(_d)
+        _candidate = _xgc_os.path.join(_d, "xgcore.dll")
+        if _xgc_os.path.isfile(_candidate):
+            return _candidate
+    return None
+
+
+def _xgc_last_error():
+    try:
+        _msg = _xgc_dll.xg_last_error()
+        if isinstance(_msg, bytes):
+            return _msg.decode('utf-8', 'replace')
+        return str(_msg)
+    except Exception:
+        return "unknown error"
+
+
+def _xgc_check(_rc, _func):
+    if _rc != 0:
+        raise RuntimeError("xgcore: %s failed (%d): %s" % (_func, _rc, _xgc_last_error()))
+
+
+def _xgc_encode(_value):
+    if isinstance(_value, bytes):
+        return _value
+    return _value.encode('utf-8')
+
+
+def _xgc_as_bytes(_raw):
+    if isinstance(_raw, bytes):
+        return _raw
+    return bytes(_raw)
+
+
+def _xgc_f32(_values):
+    _arr = (_xgc_ctypes.c_float * len(_values))()
+    for _i, _v in enumerate(_values):
+        _arr[_i] = float(_v)
+    return _arr
+
+
+def _xgc_i32(_values):
+    _arr = (_xgc_ctypes.c_int32 * len(_values))()
+    for _i, _v in enumerate(_values):
+        _arr[_i] = int(_v)
+    return _arr
+
+
+class _XgParseInfo(_xgc_ctypes.Structure):
+    _fields_ = [
+        ("num_curves", _xgc_ctypes.c_int64),
+        ("num_cvs", _xgc_ctypes.c_int64),
+        ("total_records", _xgc_ctypes.c_int64),
+    ]
+
+
+try:
+    _xgc_path = _xgc_find_dll()
+    if _xgc_path:
+        _xgc_dll = _xgc_ctypes.cdll.LoadLibrary(_xgc_path)
+        _xgc_dll.xg_last_error.restype = _xgc_ctypes.c_char_p
+
+        _xgc_dll.xg_parse_frame_size.argtypes = [
+            _xgc_ctypes.c_char_p, _xgc_ctypes.c_size_t, _xgc_ctypes.c_int,
+            _xgc_ctypes.POINTER(_XgParseInfo)]
+        _xgc_dll.xg_parse_frame_size.restype = _xgc_ctypes.c_int
+
+        _xgc_dll.xg_parse_frame.argtypes = [
+            _xgc_ctypes.c_char_p, _xgc_ctypes.c_size_t, _xgc_ctypes.c_int,
+            _xgc_ctypes.POINTER(_xgc_ctypes.c_float),
+            _xgc_ctypes.POINTER(_xgc_ctypes.c_int32),
+            _xgc_ctypes.POINTER(_xgc_ctypes.c_float),
+            _xgc_ctypes.POINTER(_xgc_ctypes.c_float),
+            _xgc_ctypes.POINTER(_xgc_ctypes.c_int32),
+            _xgc_ctypes.POINTER(_XgParseInfo)]
+        _xgc_dll.xg_parse_frame.restype = _xgc_ctypes.c_int
+
+        _xgc_dll.xg_parse_face.argtypes = [
+            _xgc_ctypes.c_char_p, _xgc_ctypes.c_size_t, _xgc_ctypes.c_int,
+            _xgc_ctypes.POINTER(_xgc_ctypes.c_int32),
+            _xgc_ctypes.POINTER(_xgc_ctypes.c_float),
+            _xgc_ctypes.POINTER(_xgc_ctypes.c_int32),
+            _xgc_ctypes.POINTER(_xgc_ctypes.c_int64)]
+        _xgc_dll.xg_parse_face.restype = _xgc_ctypes.c_int
+
+        _xgc_dll.xg_abc_open.argtypes = [
+            _xgc_ctypes.c_char_p, _xgc_ctypes.c_double, _xgc_ctypes.c_double,
+            _xgc_ctypes.c_int, _xgc_ctypes.c_int,
+            _xgc_ctypes.POINTER(_xgc_ctypes.c_int)]
+        _xgc_dll.xg_abc_open.restype = _xgc_ctypes.c_int
+
+        _xgc_dll.xg_abc_add_curves.argtypes = [
+            _xgc_ctypes.c_int, _xgc_ctypes.c_char_p, _xgc_ctypes.c_int,
+            _xgc_ctypes.c_int, _xgc_ctypes.POINTER(_xgc_ctypes.c_int)]
+        _xgc_dll.xg_abc_add_curves.restype = _xgc_ctypes.c_int
+
+        _xgc_dll.xg_abc_write_first.argtypes = [
+            _xgc_ctypes.c_int, _xgc_ctypes.c_char_p, _xgc_ctypes.c_size_t,
+            _xgc_ctypes.c_char_p, _xgc_ctypes.c_int, _xgc_ctypes.c_int]
+        _xgc_dll.xg_abc_write_first.restype = _xgc_ctypes.c_int
+
+        _xgc_dll.xg_abc_write_frame.argtypes = [
+            _xgc_ctypes.c_int, _xgc_ctypes.c_char_p, _xgc_ctypes.c_size_t,
+            _xgc_ctypes.c_double]
+        _xgc_dll.xg_abc_write_frame.restype = _xgc_ctypes.c_int
+
+        _xgc_dll.xg_abc_write_curves_first.argtypes = [
+            _xgc_ctypes.c_int,
+            _xgc_ctypes.POINTER(_xgc_ctypes.c_float),
+            _xgc_ctypes.POINTER(_xgc_ctypes.c_int32),
+            _xgc_ctypes.POINTER(_xgc_ctypes.c_int32),
+            _xgc_ctypes.POINTER(_xgc_ctypes.c_float),
+            _xgc_ctypes.POINTER(_xgc_ctypes.c_float),
+            _xgc_ctypes.c_int64, _xgc_ctypes.c_int64, _xgc_ctypes.c_int64]
+        _xgc_dll.xg_abc_write_curves_first.restype = _xgc_ctypes.c_int
+
+        _xgc_dll.xg_abc_write_curves_frame.argtypes = [
+            _xgc_ctypes.c_int, _xgc_ctypes.POINTER(_xgc_ctypes.c_float),
+            _xgc_ctypes.c_int64]
+        _xgc_dll.xg_abc_write_curves_frame.restype = _xgc_ctypes.c_int
+
+        _xgc_dll.xg_abc_write_arb_string.argtypes = [
+            _xgc_ctypes.c_int, _xgc_ctypes.c_char_p,
+            _xgc_ctypes.POINTER(_xgc_ctypes.c_char_p), _xgc_ctypes.c_int64]
+        _xgc_dll.xg_abc_write_arb_string.restype = _xgc_ctypes.c_int
+
+        _xgc_dll.xg_abc_write_arb_int32.argtypes = [
+            _xgc_ctypes.c_int, _xgc_ctypes.c_char_p,
+            _xgc_ctypes.POINTER(_xgc_ctypes.c_int32), _xgc_ctypes.c_int64]
+        _xgc_dll.xg_abc_write_arb_int32.restype = _xgc_ctypes.c_int
+
+        _xgc_dll.xg_abc_write_arb_float.argtypes = [
+            _xgc_ctypes.c_int, _xgc_ctypes.c_char_p,
+            _xgc_ctypes.POINTER(_xgc_ctypes.c_float), _xgc_ctypes.c_int64]
+        _xgc_dll.xg_abc_write_arb_float.restype = _xgc_ctypes.c_int
+
+        _xgc_dll.xg_abc_write_arb_v2f.argtypes = [
+            _xgc_ctypes.c_int, _xgc_ctypes.c_char_p,
+            _xgc_ctypes.POINTER(_xgc_ctypes.c_float), _xgc_ctypes.c_int64]
+        _xgc_dll.xg_abc_write_arb_v2f.restype = _xgc_ctypes.c_int
+
+        _xgc_dll.xg_abc_write_root_uv.argtypes = [
+            _xgc_ctypes.c_int, _xgc_ctypes.POINTER(_xgc_ctypes.c_float),
+            _xgc_ctypes.c_size_t]
+        _xgc_dll.xg_abc_write_root_uv.restype = _xgc_ctypes.c_int
+
+        _xgc_dll.xg_abc_close.argtypes = [_xgc_ctypes.c_int]
+        _xgc_dll.xg_abc_close.restype = _xgc_ctypes.c_int
+
+        _xgc_available = True
+except Exception as _e:
+    _xgc_available = False
+    _xgc_error = str(_e)
+
+
+def getXgenRawData(_fnDepNode):
+    _splineData = _fnDepNode.findPlug("outSplineData", False)
+    _handle = _splineData.asMObject()
+    _mdata = om.MFnPluginData(_handle)
+    _mData = _mdata.data()
+    return _xgc_as_bytes(_mData.writeBinary())
+
+
+def _xgc_write_first(_object_handle, _raw):
+    _raw = _xgc_as_bytes(_raw)
+    _xgc_check(_xgc_dll.xg_abc_write_first(_object_handle, _raw, len(_raw),
+                                           _xgc_encode(""), 0, -1),
+               "xg_abc_write_first")
+
+
+def _xgc_write_frame(_object_handle, _raw):
+    _raw = _xgc_as_bytes(_raw)
+    _xgc_check(_xgc_dll.xg_abc_write_frame(_object_handle, _raw, len(_raw), 0.0),
+               "xg_abc_write_frame")
+
+
+def _xgc_write_curves_first(_object_handle, _positions, _nverts, _orders,
+                            _knots, _widths):
+    _pos_arr = _xgc_f32(_positions)
+    _nv_arr = _xgc_i32(_nverts)
+    _ord_arr = _xgc_i32(_orders)
+    _knot_arr = _xgc_f32(_knots)
+    _w_arr = _xgc_f32(_widths) if _widths is not None else None
+    _xgc_check(
+        _xgc_dll.xg_abc_write_curves_first(
+            _object_handle, _pos_arr, _nv_arr, _ord_arr, _knot_arr, _w_arr,
+            len(_nverts), len(_positions) // 3, len(_knots)),
+        "xg_abc_write_curves_first")
+
+
+def _xgc_write_curves_frame(_object_handle, _positions):
+    _pos_arr = _xgc_f32(_positions)
+    _xgc_check(
+        _xgc_dll.xg_abc_write_curves_frame(_object_handle, _pos_arr,
+                                           len(_positions) // 3),
+        "xg_abc_write_curves_frame")
+
+
+def _xgc_write_arb_string(_object_handle, _name, _values):
+    _encoded = [_xgc_encode(str(_v)) for _v in _values]
+    _arr = (_xgc_ctypes.c_char_p * len(_encoded))()
+    for _i, _v in enumerate(_encoded):
+        _arr[_i] = _v
+    _xgc_check(
+        _xgc_dll.xg_abc_write_arb_string(_object_handle, _xgc_encode(_name),
+                                         _arr, len(_arr)),
+        "xg_abc_write_arb_string")
+
+
+def _xgc_write_arb_int32(_object_handle, _name, _values):
+    _arr = _xgc_i32(_values)
+    _xgc_check(
+        _xgc_dll.xg_abc_write_arb_int32(_object_handle, _xgc_encode(_name),
+                                        _arr, len(_arr)),
+        "xg_abc_write_arb_int32")
+
+
+def _xgc_write_arb_float(_object_handle, _name, _values):
+    _arr = _xgc_f32(_values)
+    _xgc_check(
+        _xgc_dll.xg_abc_write_arb_float(_object_handle, _xgc_encode(_name),
+                                        _arr, len(_arr)),
+        "xg_abc_write_arb_float")
+
+
+def _xgc_write_arb_v2f(_object_handle, _name, _values):
+    _arr = _xgc_f32(_values)
+    _xgc_check(
+        _xgc_dll.xg_abc_write_arb_v2f(_object_handle, _xgc_encode(_name),
+                                      _arr, len(_arr)),
+        "xg_abc_write_arb_v2f")
+
+
+def _xgc_write_root_uv(_object_handle, _uvs):
+    _arr = _xgc_f32(_uvs)
+    _xgc_check(
+        _xgc_dll.xg_abc_write_root_uv(_object_handle, _arr, len(_uvs) // 2),
+        "xg_abc_write_root_uv")
+
+
+def _xgc_parse_frame(_raw, _sort_by_uv):
+    _raw = _xgc_as_bytes(_raw)
+    _info = _XgParseInfo()
+    _xgc_check(
+        _xgc_dll.xg_parse_frame_size(_raw, len(_raw), int(bool(_sort_by_uv)),
+                                     _xgc_ctypes.byref(_info)),
+        "xg_parse_frame_size")
+    _n = int(_info.num_curves)
+    _cvs = int(_info.num_cvs)
+    _positions = (_xgc_ctypes.c_float * (_cvs * 3))()
+    _offsets = (_xgc_ctypes.c_int32 * (_n + 1))()
+    _widths = (_xgc_ctypes.c_float * _cvs)()
+    _roots = (_xgc_ctypes.c_float * (_n * 3))()
+    _order = (_xgc_ctypes.c_int32 * _n)()
+    _xgc_check(
+        _xgc_dll.xg_parse_frame(_raw, len(_raw), int(bool(_sort_by_uv)),
+                                _positions, _offsets, _widths, _roots, _order,
+                                _xgc_ctypes.byref(_info)),
+        "xg_parse_frame")
+    return _n, _cvs, list(_roots[:_n * 3])
+
+
+def _xgc_parse_face(_raw, _sort_by_uv):
+    _raw = _xgc_as_bytes(_raw)
+    _info = _XgParseInfo()
+    _xgc_check(
+        _xgc_dll.xg_parse_frame_size(_raw, len(_raw), int(bool(_sort_by_uv)),
+                                     _xgc_ctypes.byref(_info)),
+        "xg_parse_frame_size")
+    _count = max(1, int(_info.total_records))
+    _face_ids = (_xgc_ctypes.c_int32 * _count)()
+    _face_uvs = (_xgc_ctypes.c_float * (_count * 2))()
+    _order = (_xgc_ctypes.c_int32 * _count)()
+    _out_count = _xgc_ctypes.c_int64(0)
+    _xgc_check(
+        _xgc_dll.xg_parse_face(_raw, len(_raw), int(bool(_sort_by_uv)),
+                               _face_ids, _face_uvs, _order,
+                               _xgc_ctypes.byref(_out_count)),
+        "xg_parse_face")
+    _n = int(_out_count.value)
+    return (list(_face_uvs[:_n * 2]), list(_face_ids[:_n]), list(_order[:_n]), _n)
+
+
+class CppArchive(object):
+    def __init__(self, _path, _spf, _start_time, _animate, _sort_by_uv):
+        _handle = _xgc_ctypes.c_int(0)
+        _xgc_check(
+            _xgc_dll.xg_abc_open(_xgc_encode(_path),
+                                 _xgc_ctypes.c_double(_spf),
+                                 _xgc_ctypes.c_double(_start_time),
+                                 int(bool(_animate)), int(bool(_sort_by_uv)),
+                                 _xgc_ctypes.byref(_handle)),
+            "xg_abc_open")
+        self.handle = _handle.value
+        self.closed = False
+
+    def addTimeSampling(self, _timeSampling):
+        return 0  # mirror OArchive; sampling is configured at open()
+
+    def getTop(self):
+        raise RuntimeError("xgcore: CppArchive uses add_curves() instead of getTop()")
+
+    def add_curves(self, _name, _is_guide=False, _group_id=-1):
+        _sub = _xgc_ctypes.c_int(0)
+        _xgc_check(
+            _xgc_dll.xg_abc_add_curves(self.handle, _xgc_encode(_name),
+                                       int(bool(_is_guide)), int(_group_id),
+                                       _xgc_ctypes.byref(_sub)),
+            "xg_abc_add_curves")
+        return _sub.value
+
+    def close(self):
+        if self.closed:
+            return
+        _xgc_check(_xgc_dll.xg_abc_close(self.handle), "xg_abc_close")
+        self.closed = True
+
+
+class CppCurvesProxy(object):
+    def __init__(self, _object_handle, _fnDepNode, _needBakeUV=False, _animation=False):
+        self.object_handle = _object_handle
+        self.fnDepNode = _fnDepNode
+        self.needBakeUV = _needBakeUV
+        self.animation = _animation
+        self.hairRootList = None
+        self.groupName = None
+        self.curves = None
+
+    def write_group_name(self, _group_name, _write_card_id=False):
+        _xgc_write_arb_string(self.object_handle, "groom_group_name", [_group_name])
+        if _write_card_id:
+            _xgc_write_arb_string(self.object_handle, "groom_group_cards_id", [_group_name])
+        self.groupName = _group_name
+
+    def write_is_guide(self, _is_guide=True):
+        pass  # applied through xg_abc_add_curves
+
+    def write_group_id(self, _group_id):
+        _xgc_write_arb_int32(self.object_handle, "groom_group_id", [int(_group_id)])
+
+    def write_param(self, _name, _abcType, _data, _scope=None, _extent=1):
+        if _abcType is AbcType.string:
+            _xgc_write_arb_string(self.object_handle, _name, [str(_v) for _v in _data])
+        elif _abcType is AbcType.int32:
+            _xgc_write_arb_int32(self.object_handle, _name, [int(_v) for _v in _data])
+        elif _abcType is AbcType.float:
+            _xgc_write_arb_float(self.object_handle, _name, [float(_v) for _v in _data])
+        elif _abcType is AbcType.vector2f:
+            _flat = []
+            for _v in _data:
+                _flat.append(float(_v.x))
+                _flat.append(float(_v.y))
+            _xgc_write_arb_v2f(self.object_handle, _name, _flat)
+        else:
+            raise RuntimeError("xgcore: unsupported write_param type %r" % (_abcType,))
+
+    def write_first_frame(self):
+        itDag = om.MItDag()
+        itDag.reset(self.fnDepNode.object(), om.MItDag.kDepthFirst, om.MFn.kCurve)
+        curves = []
+        while not itDag.isDone():
+            curves.append(itDag.currentItem())
+            itDag.next()
+        self.curves = curves
+        numCurves = len(curves)
+        if numCurves == 0:
+            return
+        positions = []
+        nverts = []
+        orders = []
+        knots = []
+        if self.needBakeUV:
+            self.hairRootList = []
+        for i in range(numCurves):
+            curve = om.MFnNurbsCurve(curves[i])
+            numCVs = curve.numCVs
+            nverts.append(numCVs)
+            orders.append(curve.degree + 1)
+            cvArray = curve.cvPositions()
+            for j in range(numCVs):
+                positions.append(float(cvArray[j].x))
+                positions.append(float(cvArray[j].y))
+                positions.append(float(cvArray[j].z))
+            if self.needBakeUV:
+                self.hairRootList.append(cvArray[0])
+            knotsArray = curve.knots()
+            if len(knotsArray) > 1:
+                knotsLength = len(knotsArray)
+                if (knotsArray[0] == knotsArray[knotsLength - 1] or
+                        knotsArray[0] == knotsArray[1]):
+                    knots.append(float(knotsArray[0]))
+                else:
+                    knots.append(float(2 * knotsArray[0] - knotsArray[1]))
+                for j in range(knotsLength):
+                    knots.append(float(knotsArray[j]))
+                if (knotsArray[0] == knotsArray[knotsLength - 1] or
+                        knotsArray[knotsLength - 1] == knotsArray[knotsLength - 2]):
+                    knots.append(float(knotsArray[knotsLength - 1]))
+                else:
+                    knots.append(float(2 * knotsArray[knotsLength - 1] - knotsArray[knotsLength - 2]))
+        _xgc_write_curves_first(self.object_handle, positions, nverts, orders, knots, None)
+
+    def write_frame(self):
+        numCurves = len(self.curves)
+        if numCurves == 0:
+            return
+        positions = []
+        for i in range(numCurves):
+            curve = om.MFnNurbsCurve(self.curves[i])
+            numCVs = curve.numCVs
+            cvArray = curve.cvPositions()
+            for j in range(numCVs):
+                positions.append(float(cvArray[j].x))
+                positions.append(float(cvArray[j].y))
+                positions.append(float(cvArray[j].z))
+        _xgc_write_curves_frame(self.object_handle, positions)
+
+    def bake_uv(self, bakeMesh, uv_set=None):
+        if not self.needBakeUV:
+            return
+        if self.hairRootList is None or bakeMesh is None:
+            return
+        if uv_set is None:
+            uv_set = bakeMesh.currentUVSetName()
+        elif uv_set not in bakeMesh.getUVSetNames():
+            raise Exception('Invalid UV Set : %s' % uv_set)
+        uvs = []
+        for hairRoot in self.hairRootList:
+            res = bakeMesh.getUVAtPoint(hairRoot, om.MSpace.kWorld, uvSet=uv_set)
+            uvs.append(float(res[0]))
+            uvs.append(float(res[1]))
+        _xgc_write_root_uv(self.object_handle, uvs)
+
+
+class CppGuideProxy(CppCurvesProxy):
+    def __init__(self, _object_handle, _fnDepNode, _needRootList=False, _animation=False):
+        if not _fnDepNode.object().hasFn(om.MFn.kTransform):
+            _fnDepNode = om.MFnDependencyNode(om.MFnDagNode(_fnDepNode.object()).parent(0))
+        CppCurvesProxy.__init__(self, _object_handle, _fnDepNode, _needRootList, _animation)
+        itDag = om.MItDag()
+        itDag.reset(self.fnDepNode.object(), om.MItDag.kBreadthFirst, om.MFn.kInvalid)
+        guides = []
+        while not itDag.isDone():
+            dn = om.MFnDependencyNode(itDag.currentItem())
+            if dn.typeName == 'xgmSplineGuide':
+                guides.append(itDag.getPath())
+            itDag.next()
+        self.guides = guides
+        self.xgenProxy = None
+        self.ptexPath = None
+        self.writePtexGuideId = False
+
+    def set_xgen_proxy_and_ptex(self, _xgenSpline, _ptexPath):
+        self.xgenProxy = _xgenSpline
+        self.ptexPath = _ptexPath
+
+    def write_guide_id_from_ptex(self):
+        if not self.writePtexGuideId:
+            return
+        ptexPath = self.ptexPath
+        xgenSpline = self.xgenProxy
+        if ptexPath is None or ptexPath == "":
+            return
+        if self.xgenProxy is None:
+            return
+        ptexSampler = PtexSampler(ptexPath)
+        self.regionPtex = ptexPath
+
+        guide_map = dict()
+
+        def color2Int(color):
+            a = int(color[0] * 255) & 0xff
+            b = int(color[1] * 255) & 0xff
+            c = int(color[2] * 255) & 0xff
+            return (a << 16) | (b << 8) | c
+
+        for i, guide in enumerate(self.guides):
+            dn = om.MFnDependencyNode(guide.node())
+            u = dn.findPlug('uLoc', False).asFloat()
+            v = dn.findPlug('vLoc', False).asFloat()
+            faceId = dn.findPlug('faceId', False).asInt()
+            color = ptexSampler.sampleData(u, v, faceId)
+            hash = color2Int(color)
+            if hash in guide_map:
+                old_guide = om.MFnDependencyNode(guide_map[hash][0].node())
+                print("guide %s and %s are in the same area on texture, only use %s." % (
+                    dn.name(), old_guide.name(), old_guide.name()))
+                continue
+            guide_map[hash] = (guide, i)
+
+        raw = getXgenRawData(xgenSpline.firstSpline)
+        face_uvs, face_ids, order, count = _xgc_parse_face(raw, True)
+
+        guideIdStartIndex = getGroomGuideIdStartIndex()
+        guideIdNextStartIndex = guideIdStartIndex + len(self.guides)
+        _xgc_write_arb_int32(self.object_handle, "groom_id",
+                             list(range(guideIdStartIndex, guideIdNextStartIndex)))
+
+        spline_num = len(xgenSpline.hairRootList)
+        _xgc_write_arb_float(xgenSpline.object_handle, "groom_guide_weights",
+                             [1.0] * spline_num)
+
+        guide_id_data = [0] * spline_num
+        first_guide_name = om.MFnDependencyNode(self.guides[0].node()).name()
+        spline_index = 0
+        for i, faceId in enumerate(face_ids):
+            u = face_uvs[i * 2]
+            v = face_uvs[i * 2 + 1]
+            color = ptexSampler.sampleData(u, v, faceId)
+            hash = color2Int(color)
+            guide_id = guideIdStartIndex
+            if hash not in guide_map:
+                print("The spline index (%d) does not have a valid guide attached to %s." % (i, first_guide_name))
+            else:
+                guide_id += guide_map[hash][1]
+            if spline_index >= spline_num:
+                raise Exception("spline_index >= spline_num")
+            sorted_spine_index = order[spline_index]
+            guide_id_data[sorted_spine_index] = guide_id
+            spline_index += 1
+        ptexSampler.close()
+        _xgc_write_arb_int32(xgenSpline.object_handle, "groom_closest_guides", guide_id_data)
+        setGroomGuideIdStartIndex(guideIdNextStartIndex)
+
+    def write_first_frame(self):
+        numCurves = len(self.guides)
+        positions = []
+        nverts = []
+        orders = []
+        knots = []
+        if self.needBakeUV:
+            self.hairRootList = []
+        degree = 1
+        for i in range(numCurves):
+            data = cmds.xgmGuideGeom(guide=self.guides[i], numVertices=True)
+            numCVs = int(data[0])
+            data = cmds.xgmGuideGeom(guide=self.guides[i], controlPoints=True)
+            positions += data
+            orders.append(degree + 1)
+            nverts.append(numCVs)
+            if self.needBakeUV:
+                self.hairRootList.append(om.MPoint(data[:3]))
+            knotsInsideNum = numCVs - degree + 1
+            knotsList = [0] * degree + list(range(knotsInsideNum)) + [knotsInsideNum - 1] * degree
+            knots += knotsList
+        _xgc_write_curves_first(self.object_handle, positions, nverts, orders, knots, None)
+
+    def write_frame(self):
+        numCurves = len(self.guides)
+        if numCurves == 0:
+            return
+        positions = []
+        for i in range(numCurves):
+            data = cmds.xgmGuideGeom(guide=self.guides[i], controlPoints=True)
+            positions += data
+        _xgc_write_curves_frame(self.object_handle, positions)
+
+
+class CppXGenProxyEveryFrame(CppCurvesProxy):
+    def __init__(self, _object_handle, _descFnDepNode, _needRootList=False, _animation=False):
+        CppCurvesProxy.__init__(self, _object_handle, None, _needRootList, _animation)
+        self.descFnDepNode = _descFnDepNode
+        self.firstSpline = None
+        self.firstSplineIndex2order = None
+        # True when guide-id-from-ptex is enabled: the guide proxy needs the
+        # strand count from hairRootList, so the raw data must be parsed.
+        self.needGuideIds = False
+        self.numCurves = 0
+        self.numCVs = 0
+
+    def write_first_frame(self):
+        spline = ConvertToInteractive(self.descFnDepNode)
+        self.fnDepNode = spline
+        self.firstSpline = spline
+        raw = getXgenRawData(spline)
+        _xgc_write_first(self.object_handle, raw)
+        # Parsing the raw spline data is only needed for bake UV roots or for
+        # the guide-id-from-ptex path.  Skipping it avoids two full DLL parses
+        # of the same data (~4 s on a typical scene) when neither is enabled.
+        if self.needBakeUV or self.needGuideIds:
+            _n, _cvs, _roots = _xgc_parse_frame(raw, True)
+            _face_uvs, _face_ids, _order, _count = _xgc_parse_face(raw, True)
+            self.numCurves = _n
+            self.numCVs = _cvs
+            self.firstSplineIndex2order = _order
+            self.hairRootList = []
+            for i in range(_n):
+                self.hairRootList.append(om.MPoint(_roots[i * 3], _roots[i * 3 + 1], _roots[i * 3 + 2]))
+
+    def write_frame(self):
+        spline = ConvertToInteractive(self.descFnDepNode)
+        self.fnDepNode = spline
+        raw = getXgenRawData(spline)
+        _xgc_write_frame(self.object_handle, raw)
+
+
+# %%
 
 class SaveXGenDesWindow(QtWidgets.QDialog):
     class MultiSelectCheckBox(QtWidgets.QCheckBox):
@@ -1139,6 +1789,11 @@ class SaveXGenDesWindow(QtWidgets.QDialog):
         self.createCardId_cb.setChecked(False)
         hBox.addWidget(self.createCardId_cb)
 
+        self.useCpp_cb = QtWidgets.QCheckBox("Use C++ acceleration")
+        self.useCpp_cb.setChecked(False)
+        self.useCpp_cb.setEnabled(_xgc_available)
+        hBox.addWidget(self.useCpp_cb)
+
         frameLayout.addLayout(hBox)
 
         self.save_button = QtWidgets.QPushButton("Save Alembic File", self)
@@ -1295,6 +1950,22 @@ class SaveXGenDesWindow(QtWidgets.QDialog):
         deleteSaveXGenDesWindowParent()
 
     def save_abc(self):
+        try:
+            return self._save_abc_impl()
+        except Exception:
+            if getattr(self, '_cpp_archive', None) is not None:
+                try:
+                    self._cpp_archive.close()
+                except Exception:
+                    pass
+                try:
+                    if _xgc_os.path.exists(self._cpp_path):
+                        _xgc_os.remove(self._cpp_path)
+                except Exception:
+                    pass
+            raise
+
+    def _save_abc_impl(self):
         if len(self.contentList) == 0:
             print("No content")
             return
@@ -1312,8 +1983,6 @@ class SaveXGenDesWindow(QtWidgets.QDialog):
         selectionList = om.MGlobal.getActiveSelectionList()
         startTime = time.time()
         oldCurTime = omAnim.MAnimControl.currentTime()
-        archive = abc.OArchive(file_path[0])
-
         anyAnimation = False
         for item in self.contentList:
             if item.export.isChecked():
@@ -1322,20 +1991,30 @@ class SaveXGenDesWindow(QtWidgets.QDialog):
                     anyAnimation = True
                     break
 
+        frameRange = None
+        spf = 0.0
         if anyAnimation:
             frameRange = [int(self.startFrame.text()), int(self.endFrame.text())]
             if (frameRange[0] > frameRange[1]
                     or frameRange[0] < omAnim.MAnimControl.minTime().value
                     or frameRange[1] > omAnim.MAnimControl.maxTime().value):
                 raise ValueError("Frame out of range.")
-            # frameRange[0] = int(max(frameRange[0], omAnim.MAnimControl.minTime().value))
-            # frameRange[1] = int(min(frameRange[1], omAnim.MAnimControl.maxTime().value))
 
             sec = om.MTime(1, om.MTime.kSeconds)
             spf = 1.0 / sec.asUnits(om.MTime.uiUnit())
-            timeSampling = abcA.TimeSampling(spf, spf * frameRange[0])
-
-            timeIndex = archive.addTimeSampling(timeSampling)
+        useCpp = _xgc_available and self.useCpp_cb.isChecked()
+        self._cpp_archive = None
+        self._cpp_path = None
+        if useCpp:
+            archive = CppArchive(file_path[0], spf, spf * frameRange[0] if frameRange else 0.0,
+                                 anyAnimation, True)
+            self._cpp_archive = archive
+            self._cpp_path = file_path[0]
+        else:
+            archive = abc.OArchive(file_path[0])
+            if anyAnimation:
+                timeSampling = abcA.TimeSampling(spf, spf * frameRange[0])
+                timeIndex = archive.addTimeSampling(timeSampling)
         proxyList = []  # All Alembic content should be destroyed at the end of the method, otherwise it will not be written to the file
         setGroomGuideIdStartIndex(0)
         for item in self.contentList:
@@ -1344,30 +2023,57 @@ class SaveXGenDesWindow(QtWidgets.QDialog):
                 needBakeUV = item.bakeUV.isChecked()
                 hasAnimation = item.animation.isChecked()
                 useGuide = item.useGuide.isChecked()
-                if hasAnimation:
-                    curveObj = abcGeom.OCurves(archive.getTop(), fnDepNode.name(), timeIndex)
+                if useCpp:
+                    objectHandle = archive.add_curves(fnDepNode.name(), False, -1)
+                    xgenProxy = CppXGenProxyEveryFrame(objectHandle, item.fnDepNode,
+                                                       needBakeUV | useGuide, item.splineAnimation)
+                    xgenProxy.needBakeUV = needBakeUV
+                    xgenProxy.needGuideIds = useGuide and item.writePtexGuideId
+                    xgenProxy.write_group_name(item.groupName.text(), self.createCardId_cb.isChecked())
+                    if useGuide:
+                        guideName = fnDepNode.name() + "_guide"
+                        guideHandle = archive.add_curves(guideName, True, -1)
+                        guideProxy = CppGuideProxy(guideHandle, fnDepNode, False, hasAnimation)
+                        guideProxy.write_group_name(item.groupName.text(), self.createCardId_cb.isChecked())
+                        guideProxy.write_is_guide(True)
+                        proxyList.append(guideProxy)
+                        guideProxy.set_xgen_proxy_and_ptex(xgenProxy, item.regionPtex)
+                        guideProxy.writePtexGuideId = item.writePtexGuideId
+                    proxyList.append(xgenProxy)  # after guides, for baking
                 else:
-                    curveObj = abcGeom.OCurves(archive.getTop(), fnDepNode.name())
-                xgenProxy = XGenProxyEveryFrame(curveObj, item.fnDepNode, needBakeUV | useGuide, item.splineAnimation)
-                xgenProxy.needBakeUV = needBakeUV
-                xgenProxy.write_group_name(item.groupName.text(), self.createCardId_cb.isChecked())
-                if useGuide:
-                    # guides = GuidesToCurves(item.fnDepNode)
-                    guideName = fnDepNode.name() + "_guide"
                     if hasAnimation:
-                        curveObj = abcGeom.OCurves(archive.getTop(), guideName, timeIndex)
+                        curveObj = abcGeom.OCurves(archive.getTop(), fnDepNode.name(), timeIndex)
                     else:
-                        curveObj = abcGeom.OCurves(archive.getTop(), guideName)
-                    guideProxy = GuideProxy(curveObj, fnDepNode, False, hasAnimation)
-                    guideProxy.write_group_name(item.groupName.text(), self.createCardId_cb.isChecked())
-                    guideProxy.write_is_guide(True)
-                    proxyList.append(guideProxy)
-                    guideProxy.set_xgen_proxy_and_ptex(xgenProxy, item.regionPtex)
-                    guideProxy.writePtexGuideId = item.writePtexGuideId
-                proxyList.append(xgenProxy)  # after guides, for baking
+                        curveObj = abcGeom.OCurves(archive.getTop(), fnDepNode.name())
+                    xgenProxy = XGenProxyEveryFrame(curveObj, item.fnDepNode, needBakeUV | useGuide,
+                                                    item.splineAnimation)
+                    xgenProxy.needBakeUV = needBakeUV
+                    xgenProxy.write_group_name(item.groupName.text(), self.createCardId_cb.isChecked())
+                    if useGuide:
+                        # guides = GuidesToCurves(item.fnDepNode)
+                        guideName = fnDepNode.name() + "_guide"
+                        if hasAnimation:
+                            curveObj = abcGeom.OCurves(archive.getTop(), guideName, timeIndex)
+                        else:
+                            curveObj = abcGeom.OCurves(archive.getTop(), guideName)
+                        guideProxy = GuideProxy(curveObj, fnDepNode, False, hasAnimation)
+                        guideProxy.write_group_name(item.groupName.text(), self.createCardId_cb.isChecked())
+                        guideProxy.write_is_guide(True)
+                        proxyList.append(guideProxy)
+                        guideProxy.set_xgen_proxy_and_ptex(xgenProxy, item.regionPtex)
+                        guideProxy.writePtexGuideId = item.writePtexGuideId
+                    proxyList.append(xgenProxy)  # after guides, for baking
         # return
         if len(proxyList) == 0:
             print("No content")
+            if useCpp:
+                try:
+                    archive.close()
+                except Exception:
+                    pass
+                if _xgc_os.path.exists(file_path[0]):
+                    _xgc_os.remove(file_path[0])
+                self._cpp_archive = None
             om.MGlobal.setActiveSelectionList(selectionList)
             return
 
@@ -1397,8 +2103,11 @@ class SaveXGenDesWindow(QtWidgets.QDialog):
                 item.write_first_frame()
         for item in proxyList:
             item.bake_uv(self.bakeMesh, self.uvSetStr.text())
-            if isinstance(item, GuideProxy):
+            if isinstance(item, GuideProxy) or isinstance(item, CppGuideProxy):
                 item.write_guide_id_from_ptex()
+        if useCpp:
+            archive.close()
+            self._cpp_archive = None
         print("Data has been saved in %s, it took %.2f seconds." % (file_path[0], time.time() - startTime))
         om.MGlobal.setActiveSelectionList(selectionList)
         return file_path[0]
@@ -1470,7 +2179,7 @@ class SaveXGenDesWindow(QtWidgets.QDialog):
 
 
 SaveXGenDesWindowInstanceName = '_SaveXGenDesWindowInstance'
-if SaveXGenDesWindowInstanceName not in globals():
-    globals()[SaveXGenDesWindowInstanceName] = SaveXGenDesWindow()
-globals()[SaveXGenDesWindowInstanceName].show()
-# SaveXGenDesWindow().show()
+# if SaveXGenDesWindowInstanceName not in globals():
+#     globals()[SaveXGenDesWindowInstanceName] = SaveXGenDesWindow()
+# globals()[SaveXGenDesWindowInstanceName].show()
+SaveXGenDesWindow().show()

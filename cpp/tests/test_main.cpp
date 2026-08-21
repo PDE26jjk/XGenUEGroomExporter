@@ -6,12 +6,21 @@
 
 #include <zlib.h>
 
+#include <Alembic/Abc/All.h>
+#include <Alembic/AbcCoreOgawa/All.h>
+#include <Alembic/AbcGeom/All.h>
+
 #include "json.h"
 #include "xgcore/xgcore.h"
 
 namespace {
 
 int g_failures = 0;
+
+namespace Abc = Alembic::Abc;
+namespace AbcGeom = Alembic::AbcGeom;
+namespace AbcA = Alembic::AbcCoreAbstract;
+namespace AbcCoreOgawa = Alembic::AbcCoreOgawa;
 
 #define CHECK(cond)                                                     \
   do {                                                                  \
@@ -290,6 +299,257 @@ void test_malformed() {
   CHECK(xg_parse_frame_size(nullptr, 0, 0, nullptr) == XG_ERR_INVALID_ARG);
 }
 
+void test_parse_face() {
+  SyntheticFrame frame = make_synthetic_frame(false);
+  XgParseInfo info{};
+  int rc = xg_parse_frame_size(frame.raw.data(), frame.raw.size(), 1, &info);
+  CHECK(rc == XG_OK);
+  CHECK(info.total_records == 3);
+
+  const int64_t n = info.total_records;
+  std::vector<int32_t> face_ids(static_cast<size_t>(n));
+  std::vector<float> face_uvs(static_cast<size_t>(2 * n));
+  std::vector<int32_t> order(static_cast<size_t>(n));
+  int64_t count = 0;
+  rc = xg_parse_face(frame.raw.data(), frame.raw.size(), 1, face_ids.data(),
+                     face_uvs.data(), order.data(), &count);
+  CHECK(rc == XG_OK);
+  CHECK(count == 3);
+  // Raw order face ids 2, 0, 1.
+  CHECK(face_ids[0] == 2 && face_ids[1] == 0 && face_ids[2] == 1);
+  // Raw order face uvs: (0.5,0.1), (0.1,0.9), (0.5,0.1).
+  CHECK(face_uvs[0] == 0.5f && face_uvs[1] == 0.1f);
+  CHECK(face_uvs[2] == 0.1f && face_uvs[3] == 0.9f);
+  CHECK(face_uvs[4] == 0.5f && face_uvs[5] == 0.1f);
+  // Sorted index order matches the frame order.
+  CHECK(order[0] == 2 && order[1] == 0 && order[2] == 1);
+
+  rc = xg_parse_face(frame.raw.data(), frame.raw.size(), 0, face_ids.data(),
+                     face_uvs.data(), order.data(), &count);
+  CHECK(rc == XG_OK);
+  CHECK(order[0] == 0 && order[1] == 1 && order[2] == 2);
+
+  rc = xg_parse_face(nullptr, 0, 0, nullptr, nullptr, nullptr, nullptr);
+  CHECK(rc == XG_ERR_INVALID_ARG);
+}
+
+std::vector<float> cubic_knots(int64_t length) {
+  std::vector<float> knots;
+  const int64_t inside = length - 3 + 1;
+  for (int k = 0; k < 3; ++k) knots.push_back(0.0f);
+  for (int64_t k = 0; k < inside; ++k) knots.push_back(static_cast<float>(k));
+  for (int k = 0; k < 3; ++k) {
+    knots.push_back(static_cast<float>(inside - 1));
+  }
+  return knots;
+}
+
+// Verifies the archive at `path` exposes expected top-level object names and
+// that each ICurves object has the expected sample/arb structure.
+void check_multi_archive(const char* path,
+                         const std::vector<std::string>& names,
+                         const std::vector<std::vector<std::string>>& props,
+                         size_t expected_samples) {
+  try {
+    Abc::IArchive archive(AbcCoreOgawa::ReadArchive(), path);
+    Abc::IObject top = archive.getTop();
+    CHECK(top.getNumChildren() == names.size());
+    CHECK(props.size() == names.size());
+    if (top.getNumChildren() != names.size() || props.size() != names.size()) {
+      return;
+    }
+    for (size_t i = 0; i < names.size(); ++i) {
+      Abc::IObject child = top.getChild(static_cast<AbcA::index_t>(i));
+      CHECK(child.getName() == names[i]);
+      if (!AbcGeom::ICurves::matches(child.getHeader())) {
+        CHECK(false);
+        continue;
+      }
+      AbcGeom::ICurves curves(child, Abc::kWrapExisting);
+      AbcGeom::ICurvesSchema schema = curves.getSchema();
+      if (schema.getNumSamples() != expected_samples) {
+        CHECK(false);
+        continue;
+      }
+      AbcGeom::ICurvesSchema::Sample sample;
+      schema.get(sample, Abc::ISampleSelector(static_cast<AbcA::index_t>(0)));
+      const Abc::Int32ArraySamplePtr nverts = sample.getCurvesNumVertices();
+      const Abc::P3fArraySamplePtr positions = sample.getPositions();
+      CHECK(nverts != nullptr && positions != nullptr);
+      if (nverts == nullptr || positions == nullptr) continue;
+      CHECK(nverts->size() == 2);
+      CHECK((*nverts)[0] == 3 && (*nverts)[1] == 4);
+      CHECK(positions->size() == 7);
+
+      Abc::ICompoundProperty arb = schema.getArbGeomParams();
+      std::vector<std::string> found_props;
+      for (size_t p = 0; p < arb.getNumProperties(); ++p) {
+        found_props.push_back(arb.getPropertyHeader(p).getName());
+      }
+      for (const std::string& name : props[i]) {
+        bool found = false;
+        for (const std::string& prop : found_props) {
+          if (prop == name) found = true;
+        }
+        CHECK(found);
+      }
+    }
+  } catch (const std::exception& e) {
+    CHECK(false);
+    std::printf("read-back failed: %s\n", e.what());
+  }
+}
+
+void write_arrays_for_object(int object_handle, float offset) {
+  const int32_t nverts[] = {3, 4};
+  const int32_t orders[] = {4, 4};
+  std::vector<float> positions(7 * 3);
+  for (size_t i = 0; i < positions.size(); ++i) {
+    positions[i] = offset + static_cast<float>(i);
+  }
+  std::vector<float> knots;
+  std::vector<float> k0 = cubic_knots(3);
+  std::vector<float> k1 = cubic_knots(4);
+  knots.insert(knots.end(), k0.begin(), k0.end());
+  knots.insert(knots.end(), k1.begin(), k1.end());
+  const float widths[] = {0.1f, 0.2f, 0.3f, 0.4f, 0.5f, 0.6f, 0.7f};
+  const float root_uv[] = {0.0f, 0.0f, 1.0f, 1.0f};
+
+  CHECK(xg_abc_write_curves_first(object_handle, positions.data(), nverts,
+                                  orders, knots.data(), widths, 2, 7,
+                                  static_cast<int64_t>(knots.size())) == XG_OK);
+  const char* names_a[] = {"alpha"};
+  CHECK(xg_abc_write_arb_string(object_handle, "groom_group_name", names_a,
+                                1) == XG_OK);
+  const int32_t ids[] = {42};
+  CHECK(xg_abc_write_arb_int32(object_handle, "groom_id", ids, 1) == XG_OK);
+  const float weights[] = {1.0f, 1.0f};
+  CHECK(xg_abc_write_arb_float(object_handle, "groom_weights", weights, 2) ==
+        XG_OK);
+  const float uvs[] = {0.0f, 0.5f, 1.0f, 0.5f};
+  CHECK(xg_abc_write_arb_v2f(object_handle, "groom_uvs", uvs, 2) == XG_OK);
+  CHECK(xg_abc_write_root_uv(object_handle, root_uv, 2) == XG_OK);
+
+  std::vector<float> frame2(positions);
+  for (size_t i = 0; i < frame2.size(); ++i) frame2[i] += 100.0f;
+  CHECK(xg_abc_write_curves_frame(object_handle, frame2.data(), 7) == XG_OK);
+}
+
+void test_abc_multi_arrays() {
+  const char* path = "xgcore_test_multi_arrays.abc";
+  int archive_handle = 0;
+  CHECK(xg_abc_open(path, 0.0, 0.0, 0, 0, &archive_handle) == XG_OK);
+  int a = 0, b = 0;
+  CHECK(xg_abc_add_curves(archive_handle, "obj_a", 1, -1, &a) == XG_OK);
+  CHECK(xg_abc_add_curves(archive_handle, "obj_b", 0, 5, &b) == XG_OK);
+  write_arrays_for_object(a, 0.0f);
+  write_arrays_for_object(b, 1000.0f);
+  CHECK(xg_abc_close(archive_handle) == XG_OK);
+
+  std::vector<std::string> names = {"obj_a", "obj_b"};
+  std::vector<std::vector<std::string>> props = {
+      {"groom_group_name", "groom_guide", "groom_id", "groom_weights",
+       "groom_uvs", "groom_root_uv"},
+      {"groom_group_name", "groom_group_id", "groom_id", "groom_weights",
+       "groom_uvs", "groom_root_uv"}};
+  check_multi_archive(path, names, props, 2);
+
+  // Error paths.
+  CHECK(xg_abc_add_curves(9999, "x", 0, -1, &a) == XG_ERR_INVALID_ARG);
+  int c = 0;
+  CHECK(xg_abc_open("xgcore_test_state.abc", 0.0, 0.0, 0, 0, &archive_handle) ==
+        XG_OK);
+  CHECK(xg_abc_add_curves(archive_handle, "obj_c", 0, -1, &c) == XG_OK);
+  const float pos[] = {0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f};
+  const int32_t nverts[] = {2};
+  const int32_t orders[] = {2};
+  const float knots[] = {0.0f, 0.0f, 1.0f, 1.0f};
+  CHECK(xg_abc_write_curves_frame(c, pos, 2) == XG_ERR_STATE);
+  CHECK(xg_abc_write_curves_first(c, pos, nverts, orders, knots, nullptr, 1, 2,
+                                  4) == XG_OK);
+  CHECK(xg_abc_write_curves_first(c, pos, nverts, orders, knots, nullptr, 1, 2,
+                                  4) == XG_ERR_STATE);
+  CHECK(xg_abc_close(archive_handle) == XG_OK);
+  CHECK(xg_abc_close(archive_handle) == XG_ERR_INVALID_ARG);
+}
+
+void test_abc_multi_raw() {
+  SyntheticFrame frame = make_synthetic_frame(true);
+  const char* path = "xgcore_test_multi_raw.abc";
+  int archive_handle = 0;
+  CHECK(xg_abc_open(path, 0.0, 0.0, 0, 1, &archive_handle) == XG_OK);
+  int a = 0, b = 0;
+  CHECK(xg_abc_add_curves(archive_handle, "groom_a", 0, -1, &a) == XG_OK);
+  CHECK(xg_abc_add_curves(archive_handle, "groom_b", 1, -1, &b) == XG_OK);
+  CHECK(xg_abc_write_first(a, frame.raw.data(), frame.raw.size(), "groom_a", 0,
+                           -1) == XG_OK);
+  CHECK(xg_abc_write_first(b, frame.raw.data(), frame.raw.size(), "groom_b", 1,
+                           -1) == XG_OK);
+  CHECK(xg_abc_close(archive_handle) == XG_OK);
+  try {
+    Abc::IArchive archive(AbcCoreOgawa::ReadArchive(), path);
+    Abc::IObject top = archive.getTop();
+    CHECK(top.getNumChildren() == 2);
+    if (top.getNumChildren() != 2) return;
+    CHECK(top.getChild(0).getName() == "groom_a");
+    CHECK(top.getChild(1).getName() == "groom_b");
+    for (size_t i = 0; i < 2; ++i) {
+      AbcGeom::ICurves curves(top.getChild(static_cast<AbcA::index_t>(i)),
+                              Abc::kWrapExisting);
+      AbcGeom::ICurvesSchema schema = curves.getSchema();
+      CHECK(schema.getNumSamples() == 1);
+      AbcGeom::ICurvesSchema::Sample sample;
+      schema.get(sample, Abc::ISampleSelector(static_cast<AbcA::index_t>(0)));
+      const Abc::Int32ArraySamplePtr nverts = sample.getCurvesNumVertices();
+      const Abc::P3fArraySamplePtr positions = sample.getPositions();
+      CHECK(nverts != nullptr && nverts->size() == 3);
+      CHECK(positions != nullptr && positions->size() == 9);
+    }
+  } catch (const std::exception& e) {
+    CHECK(false);
+    std::printf("raw multi read-back failed: %s\n", e.what());
+  }
+
+  // Backward-compatible single-object flow: raw API on the archive handle
+  // lazily creates one implicit object.
+  const char* single_path = "xgcore_test_single.abc";
+  CHECK(xg_abc_open(single_path, 0.0, 0.0, 0, 1, &archive_handle) == XG_OK);
+  CHECK(xg_abc_write_first(archive_handle, frame.raw.data(), frame.raw.size(),
+                           "implicit", 0, 3) == XG_OK);
+  CHECK(xg_abc_close(archive_handle) == XG_OK);
+  std::vector<std::string> single_names = {"implicit"};
+  // The single-object path writes group name; other arb props differ, so only
+  // check the object count and name here.
+  try {
+    Abc::IArchive archive(AbcCoreOgawa::ReadArchive(), single_path);
+    CHECK(archive.getTop().getNumChildren() == 1);
+    if (archive.getTop().getNumChildren() == 1) {
+      CHECK(archive.getTop().getChild(0).getName() == "implicit");
+    }
+  } catch (const std::exception& e) {
+    CHECK(false);
+    std::printf("single read-back failed: %s\n", e.what());
+  }
+}
+
+void test_abc_duplicate_group_name() {
+  // Regression: the wrapper writes groom_group_name through the arb API
+  // before xg_abc_write_first; the raw first-frame writer must not write it
+  // again for explicit objects (previously raised "Already have a property
+  // named: groom_group_name").
+  SyntheticFrame frame = make_synthetic_frame(false);
+  const char* path = "xgcore_test_dup.abc";
+  int archive_handle = 0;
+  CHECK(xg_abc_open(path, 0.0, 0.0, 0, 0, &archive_handle) == XG_OK);
+  int obj = 0;
+  CHECK(xg_abc_add_curves(archive_handle, "dup", 0, -1, &obj) == XG_OK);
+  const char* name = "dup";
+  CHECK(xg_abc_write_arb_string(obj, "groom_group_name", &name, 1) == XG_OK);
+  CHECK(xg_abc_write_first(obj, frame.raw.data(), frame.raw.size(), "dup", 0,
+                           -1) == XG_OK);
+  CHECK(xg_abc_close(archive_handle) == XG_OK);
+}
+
 }  // namespace
 
 int main() {
@@ -298,6 +558,10 @@ int main() {
   test_parse_raw();
   test_base64_unsupported();
   test_malformed();
+  test_parse_face();
+  test_abc_multi_arrays();
+  test_abc_multi_raw();
+  test_abc_duplicate_group_name();
 
   if (g_failures == 0) {
     std::printf("xgcore_tests: all tests passed\n");

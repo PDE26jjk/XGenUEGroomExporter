@@ -159,6 +159,7 @@ if(XGCORE_BUILD_TESTS)
   enable_testing()
   add_executable(xgcore_tests tests/test_main.cpp src/json.cpp)
   target_include_directories(xgcore_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-  target_link_libraries(xgcore_tests PRIVATE xgcore::xgcore ${XGCORE_ZLIB_TARGET})
+  target_link_libraries(xgcore_tests PRIVATE xgcore::xgcore ${XGCORE_ZLIB_TARGET}
+                                                  Alembic::Alembic Imath::Imath)
   add_test(NAME xgcore_tests COMMAND xgcore_tests)
 endif()

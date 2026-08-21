@@ -26,6 +26,8 @@ void print_usage() {
       "  xgcore_test parse <raw.bin> [--sort] [--dump-dir <dir>]\n"
       "  xgcore_test read <file.abc>\n"
       "  xgcore_test abc <out.abc> <raw1.bin> [raw2.bin ...] [options]\n"
+      "  xgcore_test multi <out.abc> <raw1.bin> [raw2.bin ...]"
+      " --object <name> [--object <name> ...] [options]\n"
       "options for abc:\n"
       "  --animate --start <frame> --fps <fps>\n"
       "  --group <name> [--guide] [--group-id <id>]\n");
@@ -307,6 +309,118 @@ int cmd_read(int argc, char** argv) {
   }
 }
 
+int cmd_multi(int argc, char** argv) {
+  if (argc < 5) {
+    print_usage();
+    return 1;
+  }
+  const char* abc_path = argv[2];
+  std::vector<std::string> raw_files;
+  int argi = 3;
+  while (argi < argc && argv[argi][0] != '-') {
+    raw_files.emplace_back(argv[argi]);
+    ++argi;
+  }
+  if (raw_files.empty()) {
+    print_usage();
+    return 1;
+  }
+  std::vector<std::string> objects;
+  bool animate = false;
+  bool guide = false;
+  bool sort_by_uv = false;
+  int start_frame = 1;
+  double fps = 24.0;
+  for (int i = argi; i < argc; ++i) {
+    const std::string arg = argv[i];
+    if (arg == "--object" && i + 1 < argc) {
+      objects.emplace_back(argv[++i]);
+    } else if (arg == "--animate") {
+      animate = true;
+    } else if (arg == "--sort") {
+      sort_by_uv = true;
+    } else if (arg == "--guide") {
+      guide = true;
+    } else if (arg == "--start" && i + 1 < argc) {
+      start_frame = std::atoi(argv[++i]);
+    } else if (arg == "--fps" && i + 1 < argc) {
+      fps = std::atof(argv[++i]);
+    } else {
+      std::fprintf(stderr, "unknown option: %s\n", argv[i]);
+      return 1;
+    }
+  }
+  if (objects.empty()) {
+    std::fprintf(stderr, "multi requires at least one --object <name>\n");
+    return 1;
+  }
+
+  std::vector<std::vector<uint8_t>> raws(raw_files.size());
+  for (size_t f = 0; f < raw_files.size(); ++f) {
+    if (!read_file(raw_files[f].c_str(), raws[f])) return 2;
+  }
+
+  const double spf = 1.0 / fps;
+  const double start_time = static_cast<double>(start_frame) * spf;
+  int archive_handle = 0;
+  int rc = xg_abc_open(abc_path, spf, start_time, animate ? 1 : 0,
+                       sort_by_uv ? 1 : 0, &archive_handle);
+  if (rc != XG_OK) {
+    std::fprintf(stderr, "xg_abc_open failed (%d): %s\n", rc, xg_last_error());
+    return 2;
+  }
+  std::vector<int> object_handles;
+  for (const std::string& name : objects) {
+    int obj = 0;
+    const char* name_cstr = name.c_str();
+    rc = xg_abc_add_curves(archive_handle, name_cstr, guide ? 1 : 0, -1, &obj);
+    if (rc != XG_OK) {
+      std::fprintf(stderr, "xg_abc_add_curves(%s) failed (%d): %s\n",
+                   name.c_str(), rc, xg_last_error());
+      xg_abc_close(archive_handle);
+      return 2;
+    }
+    // Explicit objects own their group name; write it through the arb API so
+    // xg_abc_write_first does not attempt a duplicate write.
+    rc = xg_abc_write_arb_string(obj, "groom_group_name", &name_cstr, 1);
+    if (rc != XG_OK) {
+      std::fprintf(stderr, "xg_abc_write_arb_string(%s) failed (%d): %s\n",
+                   name.c_str(), rc, xg_last_error());
+      xg_abc_close(archive_handle);
+      return 2;
+    }
+    object_handles.push_back(obj);
+  }
+  for (size_t f = 0; f < raws.size(); ++f) {
+    for (size_t o = 0; o < object_handles.size(); ++o) {
+      if (f == 0) {
+        rc = xg_abc_write_first(object_handles[o], raws[f].data(),
+                                raws[f].size(), objects[o].c_str(),
+                                guide ? 1 : 0, -1);
+      } else {
+        rc = xg_abc_write_frame(
+            object_handles[o], raws[f].data(), raws[f].size(),
+            static_cast<double>(start_frame + f) * spf);
+      }
+      if (rc != XG_OK) {
+        std::fprintf(stderr, "write object %s frame %zu failed (%d): %s\n",
+                     objects[o].c_str(), f, rc, xg_last_error());
+        xg_abc_close(archive_handle);
+        return 2;
+      }
+    }
+  }
+  rc = xg_abc_close(archive_handle);
+  if (rc != XG_OK) {
+    std::fprintf(stderr, "xg_abc_close failed (%d): %s\n", rc, xg_last_error());
+    return 2;
+  }
+  std::printf("wrote multi-object %s with %zu object(s) (%s, %zu frame(s))\n",
+              abc_path, object_handles.size(), animate ? "animated" : "static",
+              raws.size());
+  return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -321,6 +435,7 @@ int main(int argc, char** argv) {
   }
   if (cmd == "parse") return cmd_parse(argc, argv);
   if (cmd == "abc") return cmd_abc(argc, argv);
+  if (cmd == "multi") return cmd_multi(argc, argv);
   if (cmd == "read") return cmd_read(argc, argv);
   print_usage();
   return 1;

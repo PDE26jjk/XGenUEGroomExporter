@@ -224,12 +224,10 @@ int parse_frame(const uint8_t* raw, size_t raw_len, bool sort_by_uv,
   if (rc != XG_OK) return rc;
   rc = decode_payloads("WIDTH_CV", width_payloads);
   if (rc != XG_OK) return rc;
-  if (sort_by_uv) {
-    rc = decode_payloads("FaceId", face_id_payloads);
-    if (rc != XG_OK) return rc;
-    rc = decode_payloads("FaceUV", face_uv_payloads);
-    if (rc != XG_OK) return rc;
-  }
+  rc = decode_payloads("FaceId", face_id_payloads);
+  if (rc != XG_OK) return rc;
+  rc = decode_payloads("FaceUV", face_uv_payloads);
+  if (rc != XG_OK) return rc;
   if (prim_payloads.size() != pos_payloads.size() ||
       prim_payloads.size() != width_payloads.size()) {
     return malformed("PrimitiveInfos/Positions/WIDTH_CV segment counts differ");
@@ -274,8 +272,10 @@ int parse_frame(const uint8_t* raw, size_t raw_len, bool sort_by_uv,
   out.num_curves = static_cast<int64_t>(out.strands.size());
   out.num_cvs = cv_cursor;
 
-  if (sort_by_uv) {
-    // FaceId / FaceUV cover every strand record (including skipped ones).
+  // FaceId / FaceUV, when present, cover every strand record (including
+  // skipped length<2 ones). They are decoded in raw order regardless of the
+  // sort flag so callers can drive guide-id-from-ptex.
+  if (!face_id_payloads.empty() || !face_uv_payloads.empty()) {
     if (face_id_payloads.size() != prim_payloads.size() ||
         face_uv_payloads.size() != prim_payloads.size()) {
       return malformed("FaceId/FaceUV segment counts differ");
@@ -297,7 +297,12 @@ int parse_frame(const uint8_t* raw, size_t raw_len, bool sort_by_uv,
     if (static_cast<int64_t>(out.face_ids.size()) != out.total_records) {
       return malformed("FaceId count does not match PrimitiveInfos");
     }
+  }
 
+  if (sort_by_uv) {
+    if (face_id_payloads.empty() || face_uv_payloads.empty()) {
+      return malformed("FaceId/FaceUV required for sort_by_uv");
+    }
     // Lexicographic (faceId, u, v, index) ordering identical to Python's
     // sorted((key, i) for i, key in enumerate(order_list)).
     struct Key {
@@ -321,11 +326,14 @@ int parse_frame(const uint8_t* raw, size_t raw_len, bool sort_by_uv,
     for (size_t p = 0; p < keys.size(); ++p) {
       index_list[keys[p].index] = static_cast<int32_t>(p);
     }
+    out.order_full.assign(index_list.begin(), index_list.end());
     out.order.assign(index_list.begin(),
                      index_list.begin() + static_cast<size_t>(out.num_curves));
   } else {
     out.order.resize(static_cast<size_t>(out.num_curves));
     std::iota(out.order.begin(), out.order.end(), 0);
+    out.order_full.resize(static_cast<size_t>(out.total_records));
+    std::iota(out.order_full.begin(), out.order_full.end(), 0);
   }
   return XG_OK;
 }

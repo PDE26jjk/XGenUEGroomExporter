@@ -9,10 +9,11 @@ intact for maximum compatibility.
 
 ## What Changes
 
-- Add a shared Python wrapper module `xgcore_wrapper.py` (Python 2.7 and 3.x
-  compatible) that loads `xgcore.dll` through ctypes and exposes `CppArchive`
-  plus `CppXGenProxy` / `CppCurvesProxy` / `CppGuideProxy` classes whose
-  interfaces mirror the existing proxy classes.
+- Embed the acceleration wrapper into each exporter script (Python 2.7 and 3.x
+  compatible): the script loads `xgcore.dll` through ctypes and exposes
+  `CppArchive` plus `CppXGenProxy` / `CppCurvesProxy` / `CppGuideProxy` classes
+  whose interfaces mirror the existing proxy classes, keeping every exporter a
+  single self-contained `.py` file.
 - Add a "Use C++ acceleration" checkbox to both exporter UIs
   (`XGenUEGroomExporter.py`, `XGenDescriptionUEGroomExporter.py`). The checkbox
   is off by default and only enabled when the DLL loads successfully.
@@ -48,11 +49,11 @@ checkbox is off or the DLL is unavailable.
 ## Impact
 
 - Affected files: `XGenUEGroomExporter.py`, `XGenDescriptionUEGroomExporter.py`
-  and their `_py2` twins gain a UI checkbox and a `save_abc` branch; a new
-  `xgcore_wrapper.py` is added next to the scripts.
+  and their `_py2` twins gain a UI checkbox and a `save_abc` branch plus an
+  embedded acceleration wrapper section; no new Python module is delivered.
 - xgcore C ABI (`cpp/include/xgcore/xgcore.h`) gains new entry points; existing
   entry points stay stable.
-- The compiled `xgcore.dll` becomes a distributable artifact next to the
-  scripts; the pure-Python path remains fully functional without it.
+- The compiled `xgcore.dll` remains the only additional runtime artifact; each
+  exporter locates it through standard search paths (Maya script paths, PATH).
+  The pure-Python path remains fully functional without it.
 - No new third-party Python dependencies; the wrapper uses ctypes only.
-

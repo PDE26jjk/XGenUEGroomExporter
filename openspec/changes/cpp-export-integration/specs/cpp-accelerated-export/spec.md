@@ -26,10 +26,14 @@ the exporter SHALL run the original pure-Python export path unchanged.
 ### Requirement: Feature parity in accelerated mode
 
 In accelerated mode, the export SHALL honor every option supported by the
-pure-Python path: group name, group id, guide flag, bake UV, card id, ptex
-guide id, guide weights, animation, and spline animation. The resulting Alembic
-file SHALL contain the same objects, arbitrary parameters, and per-frame
-structure as the pure-Python path.
+pure-Python path, matching each script's existing UI: group name, group id,
+guide flag, bake UV, card id, ptex guide id, guide weights, animation, and
+spline animation. In XGenUEGroomExporter, this additionally includes the
+per-row curve/XGen type selection (xgenType / curveType); the Description
+exporter has no such option, and the accelerated path SHALL NOT introduce
+options absent from the original script. The resulting Alembic file SHALL
+contain the same objects, arbitrary parameters, and per-frame structure as the
+pure-Python path.
 
 #### Scenario: Same scene, both paths
 - **WHEN** the same scene is exported once with acceleration off and once with
@@ -39,7 +43,8 @@ structure as the pure-Python path.
 
 #### Scenario: Every option honored
 - **WHEN** a user exports with acceleration on while bake UV, guides, group
-  ids, card ids, ptex guide ids, and animation are enabled
+  ids, card ids, ptex guide ids, and animation are enabled, and the per-row
+  curve/XGen type is set in XGenUEGroomExporter
 - **THEN** all corresponding attributes are present in the exported Alembic
   file
 
@@ -67,11 +72,23 @@ indistinguishable from a successful export.
 
 ### Requirement: Python 2.7 and 3.x compatibility
 
-The acceleration wrapper SHALL work from the Python 2.7 exporters (Maya 2018
-and below) and the Python 3.x exporters (Maya 2020 and above) with the same
-DLL.
+The acceleration wrapper code SHALL work from the Python 2.7 exporters (Maya
+2018 and below) and the Python 3.x exporters (Maya 2020 and above) with the
+same DLL, embedded in each exporter script.
 
-#### Scenario: Wrapper loads in both Python generations
-- **WHEN** the wrapper module is imported under Python 2.7 and under Python 3.x
-- **THEN** both imports succeed and both can call the same DLL entry points
+#### Scenario: Wrapper runs in both Python generations
+- **WHEN** an exporter script is run under Python 2.7 and under Python 3.x
+- **THEN** both runs load the DLL and call the same entry points
 
+### Requirement: Single-file distribution
+
+The accelerated path SHALL NOT require the user to install any Python module
+beyond the exporter script itself. Each exporter SHALL remain a single
+self-contained `.py` file that can be pasted into Maya's script editor and run;
+`xgcore.dll` is the only additional runtime artifact.
+
+#### Scenario: Paste and run
+- **WHEN** a user pastes an exporter script into Maya's script editor, runs it,
+  and the DLL is available on a standard search path
+- **THEN** the exporter works, including the acceleration checkbox, without any
+  extra module installation

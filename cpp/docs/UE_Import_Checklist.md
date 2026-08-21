@@ -18,6 +18,7 @@ Regenerate with:
 ```bat
 xgcore_test abc hair_static.abc raw_data.bin --group hair1 --group-id 3
 xgcore_test abc hair_anim.abc raw_data.bin raw_data.bin raw_data.bin --animate --sort --start 1 --fps 24 --group hair1 --group-id 3
+xgcore_test multi multi_demo.abc raw_data.bin --object groom_main --object groom_guides --sort --guide
 ```
 
 Note: the animated sample repeats the same frame three times, so its file size
@@ -52,9 +53,26 @@ example.
 ## Known limitations to check
 
 - UE 5.3+ has a known bug reading guide-weight attributes (`groom_guide`
-   etc.); this project currently writes `groom_guide`/`groom_group_id`/
-   `groom_group_name`, and `groom_root_uv` is added by a later integration
-   step.
+   etc.); this project writes `groom_guide`/`groom_group_id`/
+   `groom_group_name`, `groom_root_uv`, `groom_id`, `groom_guide_weights` and
+   `groom_closest_guides` (the last three only in the Description exporter's
+   ptex guide-id path).
 - If UE reports an inconsistent vertex count, capture the exact log text and
    report it - xgcore detects this condition and returns an error rather than
    writing a broken file.
+
+## Accelerated exports from the Python scripts
+
+The "Use C++ acceleration" checkbox in both exporters routes the whole export
+through `xgcore.dll` (single writer). Verify the same way as the CLI samples:
+
+1. Export the same scene once with the checkbox off and once on.
+2. Import both `.abc` files into UE and compare curve count, total vertices,
+   group/guide attributes, bake-UV attribute, and (when enabled) animation
+   sample count/times.
+3. The accelerated file must import without errors and expose the same
+   attributes as the pure-Python file. Byte equality is not required (Alembic
+   metadata may differ); structure and attributes must match.
+
+This dual-path A/B and the UE import are manual developer steps - the agent
+does not run Maya or UE.

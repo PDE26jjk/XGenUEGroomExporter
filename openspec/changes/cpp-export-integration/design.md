@@ -10,6 +10,9 @@ Constraints that shape the design:
 
 - The original pure-Python export path must remain fully functional and is the
   default (user decision: maximum compatibility).
+- Users paste the whole exporter script into Maya's script editor and run it,
+  so each exporter must remain a single self-contained `.py` file (no separate
+  wrapper module to install).
 - A single `.abc` file can have exactly one writer for its whole lifetime;
   Python's alembic binding and the DLL cannot both write the same archive.
 - One x64 DLL must serve all Maya versions including Python 2.7, so the DLL
@@ -50,13 +53,18 @@ Alternatives considered: making the DLL the only writer (rejected by the user:
 keep the original path for maximum compatibility) and mixing writers per object
 (impossible - one file, one writer).
 
-### 2. Shared wrapper module `xgcore_wrapper.py`
+### 2. Embedded wrapper per exporter script (single-file delivery)
 
-One module next to the scripts, written to be importable by both Python 2.7
-and 3.x, owns: DLL discovery/loading, ctypes signatures, `CppArchive`, and the
-`CppXGenProxy` / `CppCurvesProxy` / `CppGuideProxy` classes. The four scripts
-import it under `try/except ImportError`. py2/py3 differences are confined to
-small helpers (bytes vs str for ctypes buffers).
+The wrapper code is embedded in each of the four exporter scripts: DLL
+discovery/loading, ctypes signatures, `CppArchive`, and the `CppXGenProxy` /
+`CppCurvesProxy` / `CppGuideProxy` classes live inside the script itself and
+stay importable under both Python 2.7 and 3.x. This keeps the established
+distribution model: users paste the whole `.py` into Maya's script editor and
+run, with no additional Python module to install. The cost is deliberate
+duplication of the wrapper section across the four scripts. Because a pasted
+script has no `__file__`, DLL discovery searches Maya script paths, `PATH`, and
+known standard locations instead of the script directory. py2/py3 differences
+are confined to small helpers (bytes vs str for ctypes buffers).
 
 ### 3. Minimal-diff integration through interface mirrors
 
@@ -64,9 +72,12 @@ The Cpp proxy classes implement the same methods `save_abc` already calls
 (`write_group_name`, `write_is_guide`, `write_group_id`, `write_first_frame`,
 `write_frame`, `bake_uv`, and the Description-script extras such as
 `hairRootList`, `firstSplineIndex2order`, `write_guide_id_from_ptex`). A small
-factory picks the class set. `save_abc` keeps its frame loop, group-id pass,
-bake pass, and ptex pass; only archive creation and the final close differ
-(Cpp mode closes explicitly; Python mode keeps the existing GC semantics).
+factory picks the class set. In XGenUEGroomExporter the per-row Type option
+(xgenType / curveType) selects CppXGenProxy vs CppCurvesProxy exactly as in the
+original script; the Description exporter has no such option and keeps its
+single proxy flow. `save_abc` keeps its frame loop, group-id pass, bake pass,
+and ptex pass; only archive creation and the final close differ (Cpp mode
+closes explicitly; Python mode keeps the existing GC semantics).
 
 ### 4. xgcore C ABI extensions
 
@@ -96,10 +107,66 @@ creating the archive would violate the single-writer rule).
 
 ### 6. Verification: dual-path A/B
 
-Export the same scene with the checkbox off and on, then compare via the
-existing xgcore read-back tooling plus Alembic read-back of the Python-written
-file: curve counts, per-curve vertex counts, arb parameters, animation sample
-count/times. UE import is the final manual check.
+The developer exports the same scene with the checkbox off and on, then
+compares via the existing xgcore read-back tooling plus Alembic read-back of
+the Python-written file: curve counts, per-curve vertex counts, arb
+parameters, animation sample count/times. UE import is the final manual check
+performed by the developer. Agents SHALL NOT auto-launch Maya or UE; every
+step that opens Maya or UE is run manually by a developer.
+
+## Verified Benchmark (2026-08-20)
+
+Scene: `description23` with guides, static frame, bake UV off unless noted.
+Driven through the agent bridge (see `docs/maya-agent-debugging.md`); timings
+are warmed runs with per-stage timers.
+
+| Path | Total | Breakdown |
+|---|---|---|
+| Pure Python (warmed) | 14.6 s | ConvertToInteractive 0.64 s, writeBinary 2.67 s, Python pack + Alembic write ~11.3 s |
+| C++ before optimization | 9.4 s | convert 0.78 s, writeBinary 3.33 s, dll write_first 1.06 s, dll parse_frame 2.17 s, dll parse_face 2.04 s |
+| C++ after optimization | 4.6 s | convert 0.63-0.68 s, writeBinary 2.8-2.9 s, dll write_first 1.07-1.15 s (parses skipped) |
+| C++ with bake UV on | 12.6 s | parses restored (parse_frame 1.85 s, parse_face 1.75 s) plus root-list/bake work |
+
+Findings:
+
+- The earlier 25.11 s pure-Python figure was a cold first run; warmed runs
+  measure ~14.6 s, matching the developer's ~14 s measurement.
+- Before optimization the accelerated path spent ~4.1 s on two unconditional
+  DLL parses of the raw spline data even when bake UV and guide-id-from-ptex
+  were off. The parses are now gated on `needBakeUV or needGuideIds`, cutting
+  the accelerated export from 9.4 s to ~4.6 s (~2x) with identical output
+  (48,338,934 B vs the pure path's 48,339,148 B; both Ogawa-valid).
+- Remaining accelerated time is dominated by Maya-side costs: writeBinary
+  (~2.9 s) and ConvertToInteractive (~0.7 s), both outside this change's scope
+  (design non-goals); the DLL core write itself is ~1.1 s as designed.
+- The common static case is now ~3.2x faster (14.6 s -> 4.6 s).
+
+## Option-parity A/B (2026-08-20)
+
+Both paths were exported on the same scene (`description23` + guides) and the
+resulting Alembic trees compared with a printProps-style dump (adapted from
+the developer's read-back script): object hierarchy, schema, curve counts,
+per-curve vertex counts, widths, arb/user properties, and sample counts.
+
+| Option combination | Pure Python | C++ | Structural diff |
+|---|---|---|---|
+| static + card id + custom group | 15.2 s | 4.8 s | 0 differences |
+| animation, 2 frames | 18.6 s | 7.6 s | 0 differences |
+| bake UV on | 19.7 s | 12.7 s | 0 differences |
+| ptex guide id (before fix) | 20.8 s | 20.3 s | 1 difference |
+| ptex guide id (after fix) | 20.8 s | 16.2 s | 0 differences |
+| spline animation, 2 frames | 34.3 s | 15.0 s | 0 differences |
+
+The A/B run exposed one parity bug: `CppCurvesProxy.bake_uv` wrote
+`groom_root_uv` whenever `hairRootList` and a bake mesh existed, even with the
+bake-UV checkbox off (triggered when ptex guide ids were enabled). The pure
+Python path checks `needBakeUV`; the C++ path did not. Fixed by adding the
+same guard to `CppCurvesProxy.bake_uv` in all four exporter scripts, and
+re-verified with 0 differences (16.2 s vs 20.3 s - the fix also removed a
+needless ~399k-point UV bake loop).
+
+Per-object parity numbers (hair): 399,474 curves / 1,997,370 vertices, widths
+present; guide: 3 curves / 12 vertices, no widths - identical in both paths.
 
 ## Risks / Trade-offs
 
@@ -127,4 +194,3 @@ artifact.
 
 - Whether to persist the acceleration preference across sessions: deferred,
   purely a UI convenience; the checkbox stays per-export for now.
-

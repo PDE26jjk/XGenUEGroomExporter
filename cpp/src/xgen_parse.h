@@ -25,6 +25,7 @@ struct ParsedFrame {
   std::vector<int32_t> face_ids; // num_curves, raw order
   std::vector<float> face_uvs;   // num_curves * 2, raw order
   std::vector<int32_t> order;    // num_curves, raw index -> output index
+  std::vector<int32_t> order_full; // all records, raw index -> sorted index
 };
 
 // Parses one frame of raw XGen spline data and optionally sorts strands by

@@ -11,10 +11,14 @@ sample (399,874 curves / 1,999,370 CVs per frame).
   - verified identical to the Python exporter (sorted and unsorted)
 - Alembic writer (static + animated `OCurves` with widths and UE arb params)
   - verified by read-back with Alembic
+- Multi-object archives (`xg_abc_add_curves`) and array-input curve writing
+  for Maya curves and guides, covered by unit tests and a CLI demo
 - UE import verification is a manual developer step (see
   `docs/UE_Import_Checklist.md`)
-- Python script integration is a follow-up change (the 4 existing `.py`
-  scripts are intentionally untouched)
+- The four Python exporter scripts embed a ctypes wrapper (single-file
+  distribution) that exposes `CppArchive` / `CppCurvesProxy` /
+  `CppXGenProxy` / `CppGuideProxy` and routes accelerated exports through this
+  DLL. Dual-path A/B and UE import remain manual developer steps.
 
 ## Requirements
 
@@ -68,6 +72,9 @@ xgcore_test read <file.abc>
 xgcore_test abc <out.abc> <raw1.bin> [raw2.bin ...] [--animate]
              [--start <n>] [--fps <n>] [--sort] [--group <name>]
              [--guide] [--group-id <id>]
+xgcore_test multi <out.abc> <raw1.bin> [raw2.bin ...]
+             --object <name> [--object <name> ...] [--animate]
+             [--start <n>] [--fps <n>] [--sort] [--guide]
 ```
 
 Each raw file becomes one frame (first raw = first frame). Repeating the same
@@ -81,8 +88,12 @@ Examples:
 xgcore_test parse raw_data.bin --sort --dump-dir out
 xgcore_test abc hair_static.abc raw_data.bin --group hair1 --group-id 0
 xgcore_test abc hair_anim.abc raw_data.bin raw_data.bin raw_data.bin --animate --sort --start 1 --fps 24
+xgcore_test multi multi_demo.abc raw_data.bin --object groom_main --object groom_guides --sort
 xgcore_test read hair_anim.abc
 ```
+
+`multi` writes one top-level curve object per `--object` into the same archive
+(each object gets the same frames), demonstrating the multi-object API.
 
 ## Verification (A/B against the Python reference)
 
@@ -102,7 +113,20 @@ sample.
 ## C ABI
 
 `include/xgcore/xgcore.h` is the public contract: plain C exports, integer
-status codes, and a thread-local error message via `xg_last_error()`.
+status codes, and a thread-local error message via `xg_last_error()`. Besides
+the parse functions it exposes:
+
+- `xg_abc_open` / `xg_abc_add_curves` / `xg_abc_close` - one archive, multiple
+  top-level curve objects; each object gets its own handle
+- `xg_abc_write_first` / `xg_abc_write_frame` - raw XGen byte input
+  (the archive's `sort_by_uv` flag controls strand ordering)
+- `xg_abc_write_curves_first` / `xg_abc_write_curves_frame` - array input for
+  Maya curves and guides (positions, nverts, orders, knots, optional widths)
+- `xg_abc_write_arb_string` / `int32` / `float` / `v2f` and
+  `xg_abc_write_root_uv` - arbitrary parameters under `arbGeomParams`
+- `xg_parse_face` - per-record FaceId/FaceUV and the strand order used by
+  guide-id-from-ptex
+
 Because the DLL has no Python dependency, it can be loaded from any Python
 generation through ctypes (Python 2.7 and 3.x):
 
@@ -115,7 +139,8 @@ dll.xg_parse_frame_size.restype = ctypes.c_int
 
 class XgParseInfo(ctypes.Structure):
     _fields_ = [("num_curves", ctypes.c_int64),
-                ("num_cvs", ctypes.c_int64)]
+                ("num_cvs", ctypes.c_int64),
+                ("total_records", ctypes.c_int64)]
 
 
 info = XgParseInfo()
@@ -124,9 +149,9 @@ if rc != 0:
     raise RuntimeError(dll.xg_last_error().decode("utf-8", "replace"))
 ```
 
-See the header comments for buffer sizing and ordering semantics. A
-Python-side wrapper with a pure-Python fallback is planned as a follow-up
-change.
+See the header comments for buffer sizing and ordering semantics. The Python
+exporters embed a ready-made wrapper (the `Cpp*` classes inside each script),
+so end users do not need to write any ctypes code.
 
 ## Measured Performance
 

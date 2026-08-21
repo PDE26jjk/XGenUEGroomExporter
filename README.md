@@ -31,6 +31,11 @@ Maya2025版本可用。[用法视频](https://www.bilibili.com/video/BV1U7mzYDEA
 
 - XGenDescriptionUEGroomExporter导出的缓存数据有概率因为顶点数量每帧对不上，而无法导入UE，这是因为脚本目前是先转成交互式XGen再导出，顶点数量可能会有出入。应该可以用一些插值算法重新采样每根发丝让他们一致，但我现在没有精力写这个，感兴趣的朋友可以研究一下。
 
+## 可选加速
+
+如果希望导出更快，可以在导出窗口勾选 "Use C++ acceleration"（需要把
+`xgcore.dll` 放在脚本旁边或 Maya 脚本目录）。不勾选时，行为与旧版完全一致。
+
 ## XGenUEGroomExporter用法说明：
 
 ![image-20250114225246322](https://raw.githubusercontent.com/PDE26jjk/misc/main/img/image-20250114225246322.png)
@@ -91,3 +96,9 @@ If **Animation** is checked, guide animation will be exported.
 **Write Guide ID from Ptex** option: Select a ptex texture; it will correlate the guide corresponding to the color with the hair strand, generating UE-recognizable attributes. By default, it reads from the Clumping modifier. **Note**: There is currently a bug in UE 5.3 and above that prevents the correct reading of guide weight attributes.
 
 The interactive XGen generated during the process will be placed under a parent node, which can be deleted by clicking **Clear Temp Data**.
+
+## Optional Acceleration
+
+To export faster, check "Use C++ acceleration" in the export window (requires
+`xgcore.dll` next to the script or in Maya's script folder). When unchecked,
+behavior is identical to the old version.
