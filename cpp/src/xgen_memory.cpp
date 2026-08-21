@@ -1,7 +1,6 @@
 #include "xgen_memory.h"
 
 #include <cstdint>
-#include <cstring>
 #include <string>
 #include <vector>
 
@@ -13,8 +12,13 @@
 
 #include "error.h"
 #include "xgen_memory_internal.h"
+#include "xgen_memory_seh.h"
 #include "xgen_parse.h"
 #include "xgcore/xgcore.h"
+
+// All raw memory reads and AdskXGen.dll calls go through the SEH-guarded
+// primitives in xgen_memory_seh.cpp; a bad pointer yields an error code
+// instead of crashing the host (Maya) process.
 
 namespace xgcore {
 namespace {
@@ -48,37 +52,6 @@ struct StreamSymbols {
   void* (__cdecl* face_uv)(void*);
 };
 
-bool readable(const void* p, size_t n) {
-  if (p == nullptr || n == 0) return false;
-  MEMORY_BASIC_INFORMATION info;
-  if (VirtualQuery(p, &info, sizeof(info)) == 0) return false;
-  if (info.State != MEM_COMMIT) return false;
-  if (info.Protect & (PAGE_NOACCESS | PAGE_GUARD)) return false;
-  const uintptr_t base = reinterpret_cast<uintptr_t>(info.BaseAddress);
-  const uintptr_t end = base + info.RegionSize;
-  const uintptr_t p_end = reinterpret_cast<uintptr_t>(p) + n;
-  return p_end <= end;
-}
-
-uint64_t read_u64(uint64_t addr) {
-  uint64_t v = 0;
-  std::memcpy(&v, reinterpret_cast<const void*>(addr), sizeof(v));
-  return v;
-}
-
-uint32_t read_u32(uint64_t addr) {
-  uint32_t v = 0;
-  std::memcpy(&v, reinterpret_cast<const void*>(addr), sizeof(v));
-  return v;
-}
-
-float read_f32(uint64_t addr) {
-  const uint32_t bits = read_u32(addr);
-  float value = 0.0f;
-  std::memcpy(&value, &bits, sizeof(value));
-  return value;
-}
-
 int unsupported(const std::string& message) {
   set_error(message);
   return XG_ERR_UNSUPPORTED;
@@ -87,6 +60,44 @@ int unsupported(const std::string& message) {
 int malformed(const std::string& message) {
   set_error(message);
   return XG_ERR_MALFORMED;
+}
+
+std::string mappable_detail(const char* name, void* m) {
+  char buf[1024];
+  if (m == nullptr) {
+    std::snprintf(buf, sizeof(buf), "%s mappable is null", name);
+    return buf;
+  }
+  bool ok = false;
+  const uint64_t impl =
+      mem::guarded_read_u64(reinterpret_cast<uint64_t>(m) + 0x08, ok);
+  uint64_t begin = 0;
+  uint64_t end = 0;
+  if (ok && impl != 0) {
+    begin = mem::guarded_read_u64(impl + 0x08, ok);
+    end = mem::guarded_read_u64(impl + 0x10, ok);
+  }
+  uint64_t q[8] = {0};
+  if (impl != 0) {
+    for (int i = 0; i < 8; ++i) {
+      q[i] = mem::guarded_read_u64(impl + static_cast<uint64_t>(i) * 8, ok);
+      if (!ok) break;
+    }
+  }
+  std::snprintf(
+      buf, sizeof(buf),
+      "%s mappable=%p impl=%p begin=%p end=%p implq=[%llx %llx %llx %llx "
+      "%llx %llx %llx %llx]",
+      name, m, reinterpret_cast<void*>(impl), reinterpret_cast<void*>(begin),
+      reinterpret_cast<void*>(end), static_cast<unsigned long long>(q[0]),
+      static_cast<unsigned long long>(q[1]),
+      static_cast<unsigned long long>(q[2]),
+      static_cast<unsigned long long>(q[3]),
+      static_cast<unsigned long long>(q[4]),
+      static_cast<unsigned long long>(q[5]),
+      static_cast<unsigned long long>(q[6]),
+      static_cast<unsigned long long>(q[7]));
+  return buf;
 }
 
 int resolve_symbols(StreamSymbols& out) {
@@ -129,21 +140,24 @@ struct RawArray {
 // size. Empty streams (begin == end == 0) are accepted.
 bool read_mappable(void* mappable, size_t elem_size, RawArray& out) {
   out = RawArray();
-  if (mappable == nullptr || !readable(mappable, 0x20)) return false;
-  const uint64_t impl =
-      read_u64(reinterpret_cast<uint64_t>(mappable) + kMappableImplOffset);
-  if (impl == 0 || !readable(reinterpret_cast<const void*>(impl), 0x18)) {
+  if (mappable == nullptr || !mem::readable(mappable, 0x20)) return false;
+  bool ok = false;
+  const uint64_t impl = mem::guarded_read_u64(
+      reinterpret_cast<uint64_t>(mappable) + kMappableImplOffset, ok);
+  if (!ok || impl == 0 ||
+      !mem::readable(reinterpret_cast<const void*>(impl), 0x18)) {
     return false;
   }
-  const uint64_t begin = read_u64(impl + kImplBeginOffset);
-  const uint64_t end = read_u64(impl + kImplEndOffset);
-  if (end < begin) return false;
+  const uint64_t begin = mem::guarded_read_u64(impl + kImplBeginOffset, ok);
+  if (!ok) return false;
+  const uint64_t end = mem::guarded_read_u64(impl + kImplEndOffset, ok);
+  if (!ok || end < begin) return false;
   const uint64_t bytes = end - begin;
   if (bytes % elem_size != 0) return false;
   out.count = static_cast<size_t>(bytes / elem_size);
   if (out.count == 0) return true;
-  if (begin == 0 || !readable(reinterpret_cast<const void*>(begin),
-                              static_cast<size_t>(bytes))) {
+  if (begin == 0 || !mem::readable(reinterpret_cast<const void*>(begin),
+                                   static_cast<size_t>(bytes))) {
     return false;
   }
   out.data = reinterpret_cast<const uint8_t*>(begin);
@@ -155,24 +169,33 @@ bool read_mappable(void* mappable, size_t elem_size, RawArray& out) {
 // every record, and CVs are concatenated in raw order.
 int read_item(const StreamSymbols& sym, uint64_t item, uint64_t& cv_cursor,
               ParsedFrame& out) {
+  void* item_ptr = reinterpret_cast<void*>(item);
+  bool ok = false;
   RawArray prim_a, pos_a, width_a, fid_a, fuv_a;
-  if (!read_mappable(sym.primitive_infos(reinterpret_cast<void*>(item)), 4,
-                     prim_a)) {
-    return malformed("failed to read primitiveInfos stream");
+  void* m_prim = mem::guarded_call_accessor(sym.primitive_infos, item_ptr, ok);
+  if (!ok) return malformed("primitiveInfos accessor call failed");
+  if (!read_mappable(m_prim, 4, prim_a)) {
+    return malformed(mappable_detail("primitiveInfos", m_prim));
   }
-  if (!read_mappable(sym.positions(reinterpret_cast<void*>(item)), 12,
-                     pos_a)) {
-    return malformed("failed to read positions stream");
+  void* m_pos = mem::guarded_call_accessor(sym.positions, item_ptr, ok);
+  if (!ok) return malformed("positions accessor call failed");
+  if (!read_mappable(m_pos, 12, pos_a)) {
+    return malformed(mappable_detail("positions", m_pos));
   }
-  if (!read_mappable(sym.width_per_cv(reinterpret_cast<void*>(item)), 4,
-                     width_a)) {
-    return malformed("failed to read widthPerCV stream");
+  void* m_width = mem::guarded_call_accessor(sym.width_per_cv, item_ptr, ok);
+  if (!ok) return malformed("widthPerCV accessor call failed");
+  if (!read_mappable(m_width, 4, width_a)) {
+    return malformed("widthPerCV mappable read failed");
   }
-  if (!read_mappable(sym.face_id(reinterpret_cast<void*>(item)), 4, fid_a)) {
-    return malformed("failed to read faceId stream");
+  void* m_fid = mem::guarded_call_accessor(sym.face_id, item_ptr, ok);
+  if (!ok) return malformed("faceId accessor call failed");
+  if (!read_mappable(m_fid, 4, fid_a)) {
+    return malformed("faceId mappable read failed");
   }
-  if (!read_mappable(sym.face_uv(reinterpret_cast<void*>(item)), 8, fuv_a)) {
-    return malformed("failed to read faceUV stream");
+  void* m_fuv = mem::guarded_call_accessor(sym.face_uv, item_ptr, ok);
+  if (!ok) return malformed("faceUV accessor call failed");
+  if (!read_mappable(m_fuv, 8, fuv_a)) {
+    return malformed("faceUV mappable read failed");
   }
   if (prim_a.count % 2 != 0) {
     return malformed("primitiveInfos must be (offset, length) pairs");
@@ -182,17 +205,24 @@ int read_item(const StreamSymbols& sym, uint64_t item, uint64_t& cv_cursor,
     return malformed("FaceId/FaceUV count does not match PrimitiveInfos");
   }
   for (size_t r = 0; r < records; ++r) {
-    const uint64_t prim =
-        reinterpret_cast<uint64_t>(prim_a.data) + r * 8;
-    const uint32_t offset = read_u32(prim);
-    const uint32_t length = read_u32(prim + 4);
+    const uint64_t prim = reinterpret_cast<uint64_t>(prim_a.data) + r * 8;
+    const uint32_t offset = mem::guarded_read_u32(prim, ok);
+    if (!ok) return malformed("failed to read primitiveInfos record");
+    const uint32_t length = mem::guarded_read_u32(prim + 4, ok);
+    if (!ok) return malformed("failed to read primitiveInfos record");
     ++out.total_records;
-    out.face_ids.push_back(
-        static_cast<int32_t>(read_u32(reinterpret_cast<uint64_t>(fid_a.data) +
-                                      r * 4)));
+    const uint32_t face_id =
+        mem::guarded_read_u32(reinterpret_cast<uint64_t>(fid_a.data) + r * 4,
+                              ok);
+    if (!ok) return malformed("failed to read faceId record");
+    out.face_ids.push_back(static_cast<int32_t>(face_id));
     const uint64_t uv = reinterpret_cast<uint64_t>(fuv_a.data) + r * 8;
-    out.face_uvs.push_back(read_f32(uv));
-    out.face_uvs.push_back(read_f32(uv + 4));
+    const float u = mem::guarded_read_f32(uv, ok);
+    if (!ok) return malformed("failed to read faceUV record");
+    const float v = mem::guarded_read_f32(uv + 4, ok);
+    if (!ok) return malformed("failed to read faceUV record");
+    out.face_uvs.push_back(u);
+    out.face_uvs.push_back(v);
     if (length < 2) continue;
     const size_t pos_elem = static_cast<size_t>(offset) * 3;
     if (pos_elem + static_cast<size_t>(length) * 3 > pos_a.count) {
@@ -204,12 +234,23 @@ int read_item(const StreamSymbols& sym, uint64_t item, uint64_t& cv_cursor,
     }
     const uint64_t pos_byte = static_cast<uint64_t>(pos_elem) * 4;
     const uint64_t pos_bytes = static_cast<uint64_t>(length) * 12;
-    out.positions.insert(out.positions.end(), pos_a.data + pos_byte,
-                         pos_a.data + pos_byte + pos_bytes);
+    const size_t old_pos = out.positions.size();
+    out.positions.resize(old_pos + static_cast<size_t>(length) * 3);
+    if (!mem::guarded_read_bytes(
+            reinterpret_cast<uint64_t>(pos_a.data) + pos_byte,
+            out.positions.data() + old_pos, static_cast<size_t>(pos_bytes))) {
+      return malformed("failed to copy positions");
+    }
     const uint64_t width_byte = static_cast<uint64_t>(width_elem) * 4;
     const uint64_t width_bytes = static_cast<uint64_t>(length) * 4;
-    out.widths.insert(out.widths.end(), width_a.data + width_byte,
-                      width_a.data + width_byte + width_bytes);
+    const size_t old_widths = out.widths.size();
+    out.widths.resize(old_widths + static_cast<size_t>(length));
+    if (!mem::guarded_read_bytes(reinterpret_cast<uint64_t>(width_a.data) +
+                                     width_byte,
+                                 out.widths.data() + old_widths,
+                                 static_cast<size_t>(width_bytes))) {
+      return malformed("failed to copy widths");
+    }
     out.strands.push_back({static_cast<uint32_t>(cv_cursor), length});
     cv_cursor += length;
   }
@@ -221,19 +262,23 @@ int read_item(const StreamSymbols& sym, uint64_t item, uint64_t& cv_cursor,
 int probe_memory_layout(uint64_t pdata_addr, bool& ok) {
   ok = false;
   if (pdata_addr == 0 ||
-      !readable(reinterpret_cast<const void*>(pdata_addr), 0x20)) {
+      !mem::readable(reinterpret_cast<const void*>(pdata_addr), 0x20)) {
     return XG_OK;
   }
-  const uint64_t spline = read_u64(pdata_addr + kMpxDataSplineOffset);
-  if (spline == 0 ||
-      !readable(reinterpret_cast<const void*>(spline), 0x20)) {
+  bool read_ok = false;
+  const uint64_t spline =
+      mem::guarded_read_u64(pdata_addr + kMpxDataSplineOffset, read_ok);
+  if (!read_ok || spline == 0 ||
+      !mem::readable(reinterpret_cast<const void*>(spline), 0x20)) {
     return XG_OK;
   }
   StreamSymbols sym;
   const int rc = resolve_symbols(sym);
   if (rc != XG_OK) return rc;
-  const uint64_t head = read_u64(spline + kSplineItemsOffset + kTreeHeadOffset);
-  if (head == 0 || !readable(reinterpret_cast<const void*>(head), 0x20)) {
+  const uint64_t head = mem::guarded_read_u64(
+      spline + kSplineItemsOffset + kTreeHeadOffset, read_ok);
+  if (!read_ok || head == 0 ||
+      !mem::readable(reinterpret_cast<const void*>(head), 0x20)) {
     return XG_OK;
   }
   ok = true;
@@ -244,46 +289,51 @@ int parse_memory_frame(uint64_t pdata_addr, bool sort_by_uv,
                        ParsedFrame& out) {
   out = ParsedFrame();
   if (pdata_addr == 0 ||
-      !readable(reinterpret_cast<const void*>(pdata_addr), 0x20)) {
+      !mem::readable(reinterpret_cast<const void*>(pdata_addr), 0x20)) {
     return malformed("invalid MPxData address");
   }
-  const uint64_t spline = read_u64(pdata_addr + kMpxDataSplineOffset);
-  if (spline == 0 ||
-      !readable(reinterpret_cast<const void*>(spline), 0x20)) {
+  bool read_ok = false;
+  const uint64_t spline =
+      mem::guarded_read_u64(pdata_addr + kMpxDataSplineOffset, read_ok);
+  if (!read_ok || spline == 0 ||
+      !mem::readable(reinterpret_cast<const void*>(spline), 0x20)) {
     return malformed("XgSplineData is null or unreachable");
   }
   StreamSymbols sym;
   int rc = resolve_symbols(sym);
   if (rc != XG_OK) return rc;
   const uint64_t items = spline + kSplineItemsOffset;
-  if (!readable(reinterpret_cast<const void*>(items), 0x10)) {
+  if (!mem::readable(reinterpret_cast<const void*>(items), 0x10)) {
     return malformed("items tree header is unreachable");
   }
-  const uint64_t head = read_u64(items + kTreeHeadOffset);
-  const uint64_t size = read_u64(items + kTreeSizeOffset);
-  if (head == 0 ||
-      !readable(reinterpret_cast<const void*>(head), 0x20)) {
+  const uint64_t head = mem::guarded_read_u64(items + kTreeHeadOffset, read_ok);
+  if (!read_ok || head == 0 ||
+      !mem::readable(reinterpret_cast<const void*>(head), 0x20)) {
     return malformed("items tree head is null or unreachable");
   }
-  if (size == 0) return malformed("XgSplineData contains no items");
-  const uint8_t* node =
-      mem::tree_leftmost(reinterpret_cast<const uint8_t*>(head));
-  if (node == nullptr) return malformed("items tree is empty");
+  const uint64_t size = mem::guarded_read_u64(items + kTreeSizeOffset, read_ok);
+  if (!read_ok || size == 0) {
+    return malformed("XgSplineData contains no items");
+  }
+
+  // Collect item pointers with a guarded tree walk (SEH-protected, POD-only),
+  // then decode each item. A layout mismatch surfaces as an error, never a
+  // host crash.
+  std::vector<uint64_t> item_ptrs(static_cast<size_t>(size));
+  const size_t collected = mem::guarded_collect_items(
+      reinterpret_cast<const uint8_t*>(head), size, item_ptrs.data(),
+      item_ptrs.size());
+  if (collected == SIZE_MAX || collected != item_ptrs.size()) {
+    return malformed("items tree walk failed");
+  }
   uint64_t cv_cursor = 0;
-  for (uint64_t i = 0; i < size; ++i) {
-    if (node == reinterpret_cast<const uint8_t*>(head) ||
-        !readable(node, 0x48)) {
-      return malformed("items tree walk failed");
-    }
-    const uint64_t item =
-        read_u64(reinterpret_cast<uint64_t>(node) + kNodeValueOffset);
+  for (const uint64_t item : item_ptrs) {
     if (item == 0 ||
-        !readable(reinterpret_cast<const void*>(item), 0x20)) {
+        !mem::readable(reinterpret_cast<const void*>(item), 0x20)) {
       return malformed("XgSplineDataItem is null or unreachable");
     }
     rc = read_item(sym, item, cv_cursor, out);
     if (rc != XG_OK) return rc;
-    node = mem::tree_next(node, reinterpret_cast<const uint8_t*>(head));
   }
   out.num_curves = static_cast<int64_t>(out.strands.size());
   out.num_cvs = static_cast<int64_t>(cv_cursor);

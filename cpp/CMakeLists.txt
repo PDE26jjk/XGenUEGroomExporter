@@ -113,8 +113,15 @@ add_library(xgcore SHARED
   src/json.cpp
   src/xgen_parse.cpp
   src/xgen_memory.cpp
+  src/xgen_memory_seh.cpp
   src/abc_writer.cpp
 )
+
+# The SEH translation unit must use /EHa so __try/__except is valid.
+if(MSVC)
+  set_source_files_properties(src/xgen_memory_seh.cpp PROPERTIES
+    COMPILE_OPTIONS "/EHa")
+endif()
 add_library(xgcore::xgcore ALIAS xgcore)
 
 target_include_directories(xgcore
