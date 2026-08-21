@@ -153,6 +153,27 @@ See the header comments for buffer sizing and ordering semantics. The Python
 exporters embed a ready-made wrapper (the `Cpp*` classes inside each script),
 so end users do not need to write any ctypes code.
 
+### Direct-memory (zero-serialization) read
+
+`xg_read_xgen_probe`, `xg_abc_write_xgen_memory_first` and
+`xg_abc_write_xgen_memory_frame` read the live `XgSplineData` reachable from
+the `MPxData` at `pdata_addr` (`MPxData + 0x10`), skipping
+`MFnPluginData.writeBinary()` and the raw-binary parse entirely. The wrapper
+obtains `pdata_addr` from the legacy `maya.OpenMaya` binding (`MPxData.this`).
+
+The reader walks the item stream map (`_Isnil`-based MSVC tree iteration, key
+at node +0x20, value at +0x90), then accesses each stream's data through the
+impl's virtual slots (slot 1 = element count, slot 4 = data pointer), which
+works for both the AdskXGen.dll and xgenToolkit.mll impl classes. Every raw
+read and foreign call is guarded with VirtualQuery + SEH, so a layout
+mismatch returns an error code instead of crashing Maya. All reads are
+borrowed (XGen owns the data; the reader never deletes or retains it).
+
+Verified on Maya 2025 (`hair_debug.mb`, density 10): the direct-memory route
+produces byte-identical Alembic output to the serialized route (positions /
+widths / nverts, all samples), at 1.60 s vs 5.25 s for a static export and
+0.60 s vs ~4.1 s for the DLL data-acquisition stage alone.
+
 ## Measured Performance
 
 Reference sample: one frame with 399,874 curves / 1,999,370 CVs (32 MB raw,

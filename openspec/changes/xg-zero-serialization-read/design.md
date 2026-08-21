@@ -196,6 +196,41 @@ is removing the feature flag or the DLL; the serialized path and pure-Python
 path remain untouched. Dev-loop behavior only activates when an override or
 dev DLL is present, so release users see no change.
 
+## Verified results (Maya 2025, 2026-08-21)
+
+Direct-memory read implemented and verified end to end (scene
+`hair_debug.mb`, density 10, 399,474 curves / 1,997,370 CVs):
+
+| Case | Zero-serialization | Serialized accelerated | Pure Python (ref) |
+|---|---|---|---|
+| Static export | 1.60 s | 5.25 s | 14.7 s |
+| Spline animation, 2 frames | 6.30 s | 13.64 s | — |
+| DLL data acquisition (read + write) | 0.60 s | writeBinary 3.0 s + parse/write 1.1 s | — |
+
+Output parity: positions / widths / nverts are byte-identical between the
+direct-memory and serialized accelerated routes for every sample (verified by
+read-back comparison of the exported Alembic files). The root-stability
+harness reports identical results on both routes (same-index roots unchanged,
+geometry deltas = the scene's animated guide 3 tip, not a sorting issue).
+
+Implementation notes discovered during verification (all confirmed by
+disassembly of the 2025 binaries):
+
+- `XgSplineDataItem::positions()` etc. are thin wrappers around `getStream`,
+  which walks the item's stream map (key at node +0x20, value at +0x90,
+  `_Isnil`-based MSVC tree iteration) and returns the `XgMappableBase*` at
+  the node value, or a global "sStreamUndefined" placeholder.
+- The mappable's data lives behind the impl's virtual slots: slot 1 returns
+  the element count, slot 4 the data pointer. The impl class differs per
+  stream: faceUV/faceId/texcoords use `XgVectorMappableImpl<T>` in
+  AdskXGen.dll; positions/primitiveInfos/widthPerCV use an xgenToolkit.mll
+  impl class with a different internal layout, so raw begin/end reads are not
+  portable — the vtable interface is.
+- In-memory `PrimitiveInfos` records are 3 uint32s (offset + 64-bit length),
+  matching the serialized 12-byte records.
+- Bake-UV and ptex-guide-id exports keep the serialized route (they need
+  face/root parsing); parity there holds by construction.
+
 ## Open Questions
 
 - Runtime confirmation on Maya 2019 requires a 2019 machine; the report's

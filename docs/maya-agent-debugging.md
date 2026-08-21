@@ -267,3 +267,42 @@ Verified on the running Maya 2025: after `importlib.reload`, the wrapper
 loaded the newest dev DLL; writing the sidecar switched the loaded module to
 the pointed-at DLL; deleting the sidecar switched back to the newest dev DLL;
 an accelerated export ran end-to-end (4.55 s) through the dev DLL.
+
+## Zero-serialization read (verified 2026-08-21, Maya 2025)
+
+The direct-memory read route is implemented and verified end to end. Layout
+facts confirmed by disassembly and live probing:
+
+- `XgSplineDataItem::positions()` / `primitiveInfos()` / `widthPerCV()` are
+  thin wrappers over `getStream`, which walks the item's stream map (key at
+  node +0x20, value at +0x90) and returns the `XgMappableBase*` or a global
+  "sStreamUndefined" placeholder.
+- The mappable's data lives behind the impl's virtual slots: slot 1 returns
+  the element count, slot 4 the data pointer. The impl class differs per
+  stream: faceUV/faceId/texcoords use AdskXGen.dll's `XgVectorMappableImpl<T>`;
+  positions/primitiveInfos/widthPerCV use an xgenToolkit.mll impl class.
+  Never read begin/end at fixed offsets across stream types — use the vtable
+  slots.
+- In-memory `PrimitiveInfos` records are 3 uint32s (offset + 64-bit length),
+  matching the serialized 12-byte records.
+- The slot-1 count can under-report the allocation on some impl classes; the
+  primitive records are authoritative, validated with VirtualQuery before
+  copying.
+
+Verified parity: static and 2-frame spline-animation exports through the
+direct-memory route are byte-identical (positions/widths/nverts, all samples)
+to the serialized accelerated route. Timings: static 1.60 s vs 5.25 s;
+animation 2 frames 6.30 s vs 13.64 s. Bake-UV and ptex-guide-id exports
+intentionally keep the serialized route.
+
+Root-stability regression check (runs inside Maya, uses the alembic bindings):
+
+```python
+exec(open(r"R:/.../cpp/scripts/root_stability.py").read())
+analyze(r"R:/.../anim.abc", r"R:/.../out.json")
+```
+
+Reports same-index root displacement, root-set identity, matched-by-root
+geometry deltas, and per-frame CV consistency. Geometry deltas in animated
+scenes are expected (e.g. guide 3's tip is keyframed by animCurves), not
+sorting failures.

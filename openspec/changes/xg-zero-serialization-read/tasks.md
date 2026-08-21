@@ -67,19 +67,19 @@
 
 ## 5. Verification Harness
 
-- [ ] 5.1 Formalize the root-stability analyzer (per-frame per-strand roots,
+- [x] 5.1 Formalize the root-stability analyzer (per-frame per-strand roots,
       same-index root displacement counts/percentiles, root-set identity,
       matched-by-root geometry deltas, per-frame CV-count consistency) into
       the verification tooling
-- [ ] 5.2 Run the harness on spline-animation exports from both accelerated
+- [x] 5.2 Run the harness on spline-animation exports from both accelerated
       routes and record results; interpret geometry deltas as scene animation
       (guide 3 tip is animated by animCurves) rather than sorting failures
-- [ ] 5.3 Wire the harness into the read-back comparison workflow documented
+- [x] 5.3 Wire the harness into the read-back comparison workflow documented
       in `docs/maya-agent-debugging.md` and the A/B recipe
 
 ## 6. Profiling and Documentation
 
-- [ ] 6.1 Profile per-frame stage timings before/after the change
+- [x] 6.1 Profile per-frame stage timings before/after the change
       (ConvertToInteractive, direct read, sort, Alembic write) at density 10
       and record the breakdown in design.md
 - [ ] 6.2 Update `cpp/README.md` and `docs/maya-agent-debugging.md`: dev-loop
