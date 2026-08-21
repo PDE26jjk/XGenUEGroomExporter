@@ -24,6 +24,11 @@ bool guarded_read_bytes(uint64_t addr, void* out, size_t n);
 // Calls a foreign (AdskXGen.dll) stream accessor with SEH protection.
 void* guarded_call_accessor(void* (__cdecl* fn)(void*), void* self, bool& ok);
 
+// Calls virtual slot `slot` on a polymorphic object (reads the vtable, then
+// calls the slot with `this` in RCX) with SEH protection. Returns the RAX
+// result (pointer or integer). Fails (ok=false) on any access violation.
+uint64_t guarded_vcall_ret64(void* obj, int slot, bool& ok);
+
 // Walks the items _Tree in-order and writes each node's value pointer into
 // `out`. Returns the number of items collected, or SIZE_MAX on any access
 // violation / structural failure.

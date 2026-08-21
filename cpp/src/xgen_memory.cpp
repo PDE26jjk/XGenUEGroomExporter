@@ -37,8 +37,6 @@ constexpr uint64_t kTreeHeadOffset = 0x00;
 constexpr uint64_t kTreeSizeOffset = 0x08;
 constexpr uint64_t kNodeValueOffset = 0x40;
 constexpr uint64_t kMappableImplOffset = 0x08;
-constexpr uint64_t kImplBeginOffset = 0x08;
-constexpr uint64_t kImplEndOffset = 0x10;
 
 // Stream accessors exported by AdskXGen.dll (identical symbol set on Maya
 // 2019 and 2025). Each returns XgMappable<T>&; on x64 the reference comes
@@ -148,19 +146,22 @@ bool read_mappable(void* mappable, size_t elem_size, RawArray& out) {
       !mem::readable(reinterpret_cast<const void*>(impl), 0x18)) {
     return false;
   }
-  const uint64_t begin = mem::guarded_read_u64(impl + kImplBeginOffset, ok);
+  // The impl exposes its data through virtual slots (verified by
+  // disassembly): slot 1 returns the element count, slot 4 the data pointer.
+  // This works for both the AdskXGen.dll and xgenToolkit.mll impl classes.
+  void* impl_ptr = reinterpret_cast<void*>(impl);
+  const uint64_t count = mem::guarded_vcall_ret64(impl_ptr, 1, ok);
   if (!ok) return false;
-  const uint64_t end = mem::guarded_read_u64(impl + kImplEndOffset, ok);
-  if (!ok || end < begin) return false;
-  const uint64_t bytes = end - begin;
-  if (bytes % elem_size != 0) return false;
-  out.count = static_cast<size_t>(bytes / elem_size);
+  const uint64_t data = mem::guarded_vcall_ret64(impl_ptr, 4, ok);
+  if (!ok) return false;
+  out.count = static_cast<size_t>(count);
   if (out.count == 0) return true;
-  if (begin == 0 || !mem::readable(reinterpret_cast<const void*>(begin),
-                                   static_cast<size_t>(bytes))) {
+  if (data == 0 ||
+      !mem::readable(reinterpret_cast<const void*>(data),
+                     static_cast<size_t>(count) * elem_size)) {
     return false;
   }
-  out.data = reinterpret_cast<const uint8_t*>(begin);
+  out.data = reinterpret_cast<const uint8_t*>(data);
   return true;
 }
 
@@ -197,62 +198,80 @@ int read_item(const StreamSymbols& sym, uint64_t item, uint64_t& cv_cursor,
   if (!read_mappable(m_fuv, 8, fuv_a)) {
     return malformed("faceUV mappable read failed");
   }
-  if (prim_a.count % 2 != 0) {
-    return malformed("primitiveInfos must be (offset, length) pairs");
+  if (prim_a.count % 3 != 0) {
+    return malformed("primitiveInfos must be (offset, length64) triples");
   }
-  const size_t records = prim_a.count / 2;
+  // In-memory PrimitiveInfos records are 3 uint32s each: offset, then the
+  // 64-bit length split into low/high words (same 12-byte layout as the
+  // serialized binary). Verified against live Maya 2025 data.
+  const size_t records = prim_a.count / 3;
   if (fid_a.count != records || fuv_a.count != records) {
-    return malformed("FaceId/FaceUV count does not match PrimitiveInfos");
+    char buf[128];
+    std::snprintf(buf, sizeof(buf),
+                  "FaceId/FaceUV count does not match PrimitiveInfos: "
+                  "prim_count=%zu fid_count=%zu fuv_count=%zu",
+                  prim_a.count, fid_a.count, fuv_a.count);
+    return malformed(buf);
   }
+
+  // Plain reads are safe here: read_mappable validated each whole array once
+  // with VirtualQuery, and the strand data ranges are validated below (also
+  // once) before copying.
+  const uint32_t* prim = reinterpret_cast<const uint32_t*>(prim_a.data);
+  const uint32_t* fid = reinterpret_cast<const uint32_t*>(fid_a.data);
+  const float* fuv = reinterpret_cast<const float*>(fuv_a.data);
+  const float* pos = reinterpret_cast<const float*>(pos_a.data);
+  const float* width = reinterpret_cast<const float*>(width_a.data);
+
+  // Pass 1: totals + face arrays (face arrays cover every record).
+  uint64_t total_cvs = 0;
   for (size_t r = 0; r < records; ++r) {
-    const uint64_t prim = reinterpret_cast<uint64_t>(prim_a.data) + r * 8;
-    const uint32_t offset = mem::guarded_read_u32(prim, ok);
-    if (!ok) return malformed("failed to read primitiveInfos record");
-    const uint32_t length = mem::guarded_read_u32(prim + 4, ok);
-    if (!ok) return malformed("failed to read primitiveInfos record");
+    const uint64_t length = static_cast<uint64_t>(prim[3 * r + 1]) |
+                            (static_cast<uint64_t>(prim[3 * r + 2]) << 32);
     ++out.total_records;
-    const uint32_t face_id =
-        mem::guarded_read_u32(reinterpret_cast<uint64_t>(fid_a.data) + r * 4,
-                              ok);
-    if (!ok) return malformed("failed to read faceId record");
-    out.face_ids.push_back(static_cast<int32_t>(face_id));
-    const uint64_t uv = reinterpret_cast<uint64_t>(fuv_a.data) + r * 8;
-    const float u = mem::guarded_read_f32(uv, ok);
-    if (!ok) return malformed("failed to read faceUV record");
-    const float v = mem::guarded_read_f32(uv + 4, ok);
-    if (!ok) return malformed("failed to read faceUV record");
-    out.face_uvs.push_back(u);
-    out.face_uvs.push_back(v);
-    if (length < 2) continue;
-    const size_t pos_elem = static_cast<size_t>(offset) * 3;
-    if (pos_elem + static_cast<size_t>(length) * 3 > pos_a.count) {
+    out.face_ids.push_back(static_cast<int32_t>(fid[r]));
+    out.face_uvs.push_back(fuv[2 * r]);
+    out.face_uvs.push_back(fuv[2 * r + 1]);
+    if (length >= 2) total_cvs += length;
+  }
+
+  // The slot-1 count can under-report the allocation on some impl classes,
+  // so the records (authoritative, same source the serializer uses) drive
+  // the validated range.
+  if (total_cvs > 0) {
+    if (!mem::readable(pos, static_cast<size_t>(total_cvs) * 3 *
+                                sizeof(float))) {
       return malformed("strand position range exceeds the positions stream");
     }
-    const size_t width_elem = static_cast<size_t>(offset);
-    if (width_elem + static_cast<size_t>(length) > width_a.count) {
+    if (!mem::readable(width,
+                       static_cast<size_t>(total_cvs) * sizeof(float))) {
       return malformed("strand width range exceeds the widthPerCV stream");
     }
-    const uint64_t pos_byte = static_cast<uint64_t>(pos_elem) * 4;
-    const uint64_t pos_bytes = static_cast<uint64_t>(length) * 12;
-    const size_t old_pos = out.positions.size();
-    out.positions.resize(old_pos + static_cast<size_t>(length) * 3);
-    if (!mem::guarded_read_bytes(
-            reinterpret_cast<uint64_t>(pos_a.data) + pos_byte,
-            out.positions.data() + old_pos, static_cast<size_t>(pos_bytes))) {
-      return malformed("failed to copy positions");
-    }
-    const uint64_t width_byte = static_cast<uint64_t>(width_elem) * 4;
-    const uint64_t width_bytes = static_cast<uint64_t>(length) * 4;
-    const size_t old_widths = out.widths.size();
-    out.widths.resize(old_widths + static_cast<size_t>(length));
-    if (!mem::guarded_read_bytes(reinterpret_cast<uint64_t>(width_a.data) +
-                                     width_byte,
-                                 out.widths.data() + old_widths,
-                                 static_cast<size_t>(width_bytes))) {
-      return malformed("failed to copy widths");
-    }
+  }
+
+  // Pass 2: copy strands (plain reads within the validated ranges).
+  const size_t pos_base = out.positions.size();
+  const size_t width_base = out.widths.size();
+  out.positions.resize(pos_base + static_cast<size_t>(total_cvs) * 3);
+  out.widths.resize(width_base + static_cast<size_t>(total_cvs));
+  uint64_t local_cursor = 0;
+  for (size_t r = 0; r < records; ++r) {
+    const uint64_t offset = prim[3 * r];
+    const uint64_t length = static_cast<uint64_t>(prim[3 * r + 1]) |
+                            (static_cast<uint64_t>(prim[3 * r + 2]) << 32);
+    if (length < 2) continue;
+    const size_t src_pos = static_cast<size_t>(offset) * 3;
+    std::memcpy(out.positions.data() + pos_base +
+                    static_cast<size_t>(local_cursor) * 3,
+                pos + src_pos,
+                static_cast<size_t>(length) * 3 * sizeof(float));
+    std::memcpy(out.widths.data() + width_base +
+                    static_cast<size_t>(local_cursor),
+                width + static_cast<size_t>(offset),
+                static_cast<size_t>(length) * sizeof(float));
     out.strands.push_back({static_cast<uint32_t>(cv_cursor), length});
     cv_cursor += length;
+    local_cursor += length;
   }
   return XG_OK;
 }

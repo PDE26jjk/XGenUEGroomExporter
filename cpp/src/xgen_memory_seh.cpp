@@ -85,6 +85,27 @@ void* guarded_call_accessor(void* (__cdecl* fn)(void*), void* self, bool& ok) {
   }
 }
 
+uint64_t guarded_vcall_ret64(void* obj, int slot, bool& ok) {
+  ok = false;
+  if (obj == nullptr || slot < 0 || !readable(obj, 8)) return 0;
+  __try {
+    void** vtable = *reinterpret_cast<void***>(obj);
+    if (vtable == nullptr ||
+        !readable(vtable, static_cast<size_t>(slot + 1) * 8)) {
+      return 0;
+    }
+    uint64_t (__cdecl* fn)(void*) =
+        reinterpret_cast<uint64_t (__cdecl*)(void*)>(vtable[slot]);
+    if (fn == nullptr) return 0;
+    const uint64_t result = fn(obj);
+    ok = true;
+    return result;
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    ok = false;
+    return 0;
+  }
+}
+
 size_t guarded_collect_items(const uint8_t* head, uint64_t size, uint64_t* out,
                              size_t capacity) {
   if (head == nullptr || out == nullptr || capacity < size) {
