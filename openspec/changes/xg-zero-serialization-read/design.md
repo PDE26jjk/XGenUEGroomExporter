@@ -127,6 +127,10 @@ reader error aborts the export and deletes the partial file (reusing the
 existing `save_abc` error path) — no silent mid-export fallback, preserving
 the single-writer rule.
 
+No additional checkbox is introduced: the existing "Use C++ acceleration"
+checkbox remains the only opt-in, and the probe automatically selects the
+direct-memory route when available (confirmed by the developer).
+
 ### 4. Dev loop: override + lazy reload + versioned dev DLLs
 
 `_xgc_find_dll()` gains, in order:
@@ -194,9 +198,6 @@ dev DLL is present, so release users see no change.
 
 ## Open Questions
 
-- Whether direct-memory mode should become the default accelerated route once
-  verified, or stay behind an additional opt-in (deferred; default stays
-  opt-in for this change).
 - Runtime confirmation on Maya 2019 requires a 2019 machine; the report's
   layout verification is the evidence until then (the 2019 step is a
   documented follow-up, not a blocker for the 2025 work).

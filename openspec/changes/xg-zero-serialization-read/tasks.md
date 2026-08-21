@@ -1,10 +1,10 @@
 ## 1. Spike and Decision Gate
 
-- [ ] 1.1 Spike on the running Maya 2025 instance: obtain the raw `MPxData*`
+- [x] 1.1 Spike on the running Maya 2025 instance: obtain the raw `MPxData*`
       address from `MFnPluginData.data()` in Python (probe `.this` and other
       SWIG pointer forms); record the result in
       `docs/maya-agent-debugging.md`
-- [ ] 1.2 Decision gate: record whether the zero-serialization route is
+- [x] 1.2 Decision gate: record whether the zero-serialization route is
       viable; if the pointer cannot be obtained, the change scope reduces to
       the dev loop + verification harness (the specs' fallback behavior
       already covers the reduced scope)

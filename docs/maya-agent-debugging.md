@@ -205,3 +205,40 @@ window that the reload re-creates.
 4. send corrected code, repeat
 5. wrap scene-mutating runs in undoInfo chunks; verify state afterwards
 ```
+
+## Zero-serialization spike (Maya 2025, verified 2026-08-21)
+
+The raw `MPxData*` for `outSplineData` is reachable from Python through the
+legacy `maya.OpenMaya` binding, whose SWIG objects expose `.this`:
+
+```python
+import maya.OpenMaya as om1
+import ctypes
+
+sel = om1.MSelectionList()
+sel.add("z..._description23_splineDescriptionShape")  # any xgmSplineDescription
+dp = om1.MDagPath()
+sel.getDagPath(0, dp)
+fn = om1.MFnDependencyNode(dp.node())
+plug = fn.findPlug("outSplineData", False)
+mobj = plug.asMObject()          # legacy asMObject() returns MObject, no out-arg
+mdata = om1.MFnPluginData(mobj)
+pdata = mdata.data()
+addr = int(pdata.this)           # MPxData*
+pdata.thisown                    # False: Maya owns it; Python must not delete it
+
+spline_ptr = ctypes.c_void_p.from_address(addr + 0x10).value  # XgSplineData*
+```
+
+Verified on the running scene: `MPxData + 0x10` yields a non-null
+`XgSplineData*`, and the vtable address falls inside `xgenToolkit.mll`
+(module base `0x7ffab0910000`, vtable `0x7ffab0d29dc0`). `thisown` is
+`False`, so the wrapper never frees the Maya-owned object; keep a reference
+to `pdata` for the duration of the read. The API 2.0
+(`maya.api.OpenMaya`) `MPxData` wrapper does NOT expose `.this` — use the
+legacy binding only for address acquisition. `MDataHandle.asAddr()` was
+ruled out: its dereference does not point to the `MPxData` object.
+
+**Decision gate (change `xg-zero-serialization-read`, task 1.2): the
+zero-serialization route is viable.** The reader lives in `xgcore.dll` and
+receives the address as an integer from the snippet above.
