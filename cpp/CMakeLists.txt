@@ -112,6 +112,7 @@ add_library(xgcore SHARED
   src/error.cpp
   src/json.cpp
   src/xgen_parse.cpp
+  src/xgen_memory.cpp
   src/abc_writer.cpp
 )
 add_library(xgcore::xgcore ALIAS xgcore)

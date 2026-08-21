@@ -9,6 +9,7 @@
 
 #include "abc_writer.h"
 #include "error.h"
+#include "xgen_memory.h"
 #include "xgen_parse.h"
 
 namespace {
@@ -155,6 +156,40 @@ int xg_abc_write_frame(int handle, const uint8_t* raw, size_t raw_len,
     return XG_ERR_INVALID_ARG;
   }
   return xgcore::abc_write_frame(handle, raw, raw_len, time);
+}
+
+int xg_read_xgen_probe(uint64_t pdata_addr, int* out_ok) {
+  xgcore::clear_error();
+  if (out_ok == nullptr) {
+    xgcore::set_error("invalid argument: null out_ok");
+    return XG_ERR_INVALID_ARG;
+  }
+  bool ok = false;
+  const int rc = xgcore::probe_memory_layout(pdata_addr, ok);
+  *out_ok = ok ? 1 : 0;
+  return rc;
+}
+
+int xg_abc_write_xgen_memory_first(int handle, uint64_t pdata_addr,
+                                   const char* group_name, int is_guide,
+                                   int group_id) {
+  xgcore::clear_error();
+  if (pdata_addr == 0 || group_name == nullptr) {
+    xgcore::set_error("invalid argument: null pointer or zero address");
+    return XG_ERR_INVALID_ARG;
+  }
+  return xgcore::abc_write_memory_first(handle, pdata_addr, group_name,
+                                        is_guide != 0, group_id);
+}
+
+int xg_abc_write_xgen_memory_frame(int handle, uint64_t pdata_addr,
+                                   double time) {
+  xgcore::clear_error();
+  if (pdata_addr == 0) {
+    xgcore::set_error("invalid argument: zero address");
+    return XG_ERR_INVALID_ARG;
+  }
+  return xgcore::abc_write_memory_frame(handle, pdata_addr, time);
 }
 
 int xg_abc_write_curves_first(int object_handle, const float* positions,

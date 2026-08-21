@@ -20,6 +20,10 @@ int abc_write_first(int handle, const uint8_t* raw, size_t raw_len,
                     const char* group_name, bool is_guide, int group_id);
 int abc_write_frame(int handle, const uint8_t* raw, size_t raw_len,
                     double time);
+int abc_write_memory_first(int handle, uint64_t pdata_addr,
+                           const char* group_name, bool is_guide,
+                           int group_id);
+int abc_write_memory_frame(int handle, uint64_t pdata_addr, double time);
 int abc_write_curves_first(int object_handle, const float* positions,
                            const int32_t* nverts, const int32_t* orders,
                            const float* knots, const float* widths,

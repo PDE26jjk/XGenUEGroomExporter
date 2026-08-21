@@ -299,42 +299,7 @@ int parse_frame(const uint8_t* raw, size_t raw_len, bool sort_by_uv,
     }
   }
 
-  if (sort_by_uv) {
-    if (face_id_payloads.empty() || face_uv_payloads.empty()) {
-      return malformed("FaceId/FaceUV required for sort_by_uv");
-    }
-    // Lexicographic (faceId, u, v, index) ordering identical to Python's
-    // sorted((key, i) for i, key in enumerate(order_list)).
-    struct Key {
-      int32_t face_id;
-      float u;
-      float v;
-      uint32_t index;
-    };
-    std::vector<Key> keys(static_cast<size_t>(out.total_records));
-    for (size_t i = 0; i < keys.size(); ++i) {
-      keys[i] = {out.face_ids[i], out.face_uvs[i * 2],
-                 out.face_uvs[i * 2 + 1], static_cast<uint32_t>(i)};
-    }
-    std::sort(keys.begin(), keys.end(), [](const Key& a, const Key& b) {
-      if (a.face_id != b.face_id) return a.face_id < b.face_id;
-      if (a.u != b.u) return a.u < b.u;  // NaN falls through, like Python
-      if (a.v != b.v) return a.v < b.v;
-      return a.index < b.index;
-    });
-    std::vector<int32_t> index_list(keys.size());
-    for (size_t p = 0; p < keys.size(); ++p) {
-      index_list[keys[p].index] = static_cast<int32_t>(p);
-    }
-    out.order_full.assign(index_list.begin(), index_list.end());
-    out.order.assign(index_list.begin(),
-                     index_list.begin() + static_cast<size_t>(out.num_curves));
-  } else {
-    out.order.resize(static_cast<size_t>(out.num_curves));
-    std::iota(out.order.begin(), out.order.end(), 0);
-    out.order_full.resize(static_cast<size_t>(out.total_records));
-    std::iota(out.order_full.begin(), out.order_full.end(), 0);
-  }
+  sort_frame(out, sort_by_uv);
   return XG_OK;
 }
 

@@ -125,6 +125,31 @@ XGCORE_API int xg_abc_write_first(int handle, const uint8_t* raw, size_t raw_len
 XGCORE_API int xg_abc_write_frame(int handle, const uint8_t* raw, size_t raw_len,
                                   double time);
 
+/*
+ * Direct-memory read (zero-serialization) API.
+ *
+ * xg_read_xgen_probe verifies the live MPxData layout: the pointer chain
+ * MPxData -> XgSplineData, the items tree header, and the AdskXGen.dll
+ * stream-accessor symbols. *out_ok is 1 when the direct-memory route can be
+ * used, 0 otherwise. Returns XG_OK when the probe executed (regardless of
+ * *out_ok) and an XG_ERR_* code on internal failure.
+ *
+ * xg_abc_write_xgen_memory_first / xg_abc_write_xgen_memory_frame read the
+ * live XgSplineData reachable from the MPxData at pdata_addr and write it
+ * exactly like xg_abc_write_first / xg_abc_write_frame (same topology,
+ * ordering, and writer). The data is owned by XGen and is only borrowed for
+ * the duration of the call; pdata_addr must stay valid until the call
+ * returns.
+ */
+XGCORE_API int xg_read_xgen_probe(uint64_t pdata_addr, int* out_ok);
+
+XGCORE_API int xg_abc_write_xgen_memory_first(int handle, uint64_t pdata_addr,
+                                              const char* group_name,
+                                              int is_guide, int group_id);
+
+XGCORE_API int xg_abc_write_xgen_memory_frame(int handle, uint64_t pdata_addr,
+                                              double time);
+
 XGCORE_API int xg_abc_write_curves_first(int object_handle,
                                          const float* positions,
                                          const int32_t* nverts,

@@ -1,6 +1,8 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -11,6 +13,8 @@
 #include <Alembic/AbcGeom/All.h>
 
 #include "json.h"
+#include "xgen_memory_internal.h"
+#include "xgen_parse.h"
 #include "xgcore/xgcore.h"
 
 namespace {
@@ -550,6 +554,58 @@ void test_abc_duplicate_group_name() {
   CHECK(xg_abc_close(archive_handle) == XG_OK);
 }
 
+// Walks a real MSVC std::multimap with the same tree layout the memory
+// reader uses for XgSplineData::items. The layout is compiler-specific, so
+// this test only runs meaningfully on the MSVC build used for Maya plugins.
+void test_memory_tree_walk() {
+  std::multimap<std::string, std::shared_ptr<int>> m;
+  m.emplace("b", std::make_shared<int>(2));
+  m.emplace("a", std::make_shared<int>(1));
+  m.emplace("c", std::make_shared<int>(3));
+  const uint8_t* map_bytes = reinterpret_cast<const uint8_t*>(&m);
+  const uint8_t* head =
+      *reinterpret_cast<const uint8_t* const*>(map_bytes + 0x00);
+  const uint64_t size = *reinterpret_cast<const uint64_t*>(map_bytes + 0x08);
+  CHECK(size == 3);
+  if (head == nullptr || size != 3) return;
+  std::vector<int> values;
+  const uint8_t* node = xgcore::mem::tree_leftmost(head);
+  for (uint64_t i = 0; i < size; ++i) {
+    if (node == head) return;
+    values.push_back(*xgcore::mem::node_shared_value<int>(node));
+    node = xgcore::mem::tree_next(node, head);
+  }
+  CHECK(values.size() == 3);
+  if (values.size() == 3) {
+    CHECK(values[0] == 1);
+    CHECK(values[1] == 2);
+    CHECK(values[2] == 3);
+  }
+  CHECK(node == head);
+}
+
+// sort_frame must match the Python exporter's ordering: lexicographic
+// (faceId, u, v, index) over ALL records, with `order` covering the valid
+// strands and `order_full` covering every record.
+void test_sort_frame() {
+  xgcore::ParsedFrame f;
+  f.total_records = 4;
+  f.num_curves = 3;
+  f.strands = {{0, 2}, {2, 3}, {5, 4}};
+  f.face_ids = {3, 1, 2, 1};
+  f.face_uvs = {0.5f, 0.5f, 0.1f, 0.2f, 0.3f, 0.4f, 0.1f, 0.1f};
+
+  xgcore::sort_frame(f, true);
+  const std::vector<int32_t> expected_full{3, 1, 2, 0};
+  const std::vector<int32_t> expected_order{3, 1, 2};
+  CHECK(f.order_full == expected_full);
+  CHECK(f.order == expected_order);
+
+  xgcore::sort_frame(f, false);
+  CHECK(f.order == std::vector<int32_t>({0, 1, 2}));
+  CHECK(f.order_full == std::vector<int32_t>({0, 1, 2, 3}));
+}
+
 }  // namespace
 
 int main() {
@@ -562,6 +618,8 @@ int main() {
   test_abc_multi_arrays();
   test_abc_multi_raw();
   test_abc_duplicate_group_name();
+  test_memory_tree_walk();
+  test_sort_frame();
 
   if (g_failures == 0) {
     std::printf("xgcore_tests: all tests passed\n");

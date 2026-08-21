@@ -17,6 +17,7 @@
 #include <Alembic/AbcGeom/All.h>
 
 #include "error.h"
+#include "xgen_memory.h"
 #include "xgen_parse.h"
 #include "xgcore/xgcore.h"
 
@@ -264,36 +265,12 @@ int abc_add_curves(int archive_handle, const char* name, bool is_guide,
   }
 }
 
-int abc_write_first(int handle, const uint8_t* raw, size_t raw_len,
-                    const char* group_name, bool is_guide, int group_id) {
-  AbcObject* w = lookup_object(handle);
-  const bool implicit_object = w == nullptr;
-  if (implicit_object) {
-    int rc = ensure_implicit_object(handle, group_name, is_guide, group_id, w);
-    if (rc != XG_OK) return rc;
-  }
-  if (w->first_written) {
-    set_error("first frame already written");
-    return XG_ERR_STATE;
-  }
-  const AbcArchive* archive = nullptr;
-  {
-    std::lock_guard<std::mutex> lock(g_handles_mutex);
-    const auto it = g_handles.find(w->archive_handle);
-    if (it == g_handles.end()) {
-      set_error("invalid archive handle");
-      return XG_ERR_INVALID_ARG;
-    }
-    archive = it->second->archive.get();
-  }
-  ParsedFrame frame;
-  int rc = parse_frame(raw, raw_len, archive->sort_by_uv, frame);
-  if (rc != XG_OK) return rc;
-  if (frame.num_curves == 0) {
-    set_error("no valid strands in the first frame");
-    return XG_ERR_MALFORMED;
-  }
+namespace {
 
+// Shared first-sample writer used by both the serialized and direct-memory
+// paths: stores topology (nverts/orders/knots/widths) plus first positions.
+int write_first_sample(AbcObject* w, const ParsedFrame& frame,
+                       bool implicit_object, const char* group_name) {
   try {
     const int64_t n = frame.num_curves;
     std::vector<int32_t> nverts(static_cast<size_t>(n));
@@ -355,6 +332,64 @@ int abc_write_first(int handle, const uint8_t* raw, size_t raw_len,
   }
 }
 
+// Shared subsequent-sample writer used by both read paths.
+int write_frame_sample(AbcObject* w, const ParsedFrame& frame) {
+  try {
+    std::vector<Imath::V3f> positions;
+    std::vector<float> widths;
+    build_output_arrays(frame, positions, widths);
+
+    AbcGeom::OCurvesSchema::Sample sample;
+    sample.setBasis(AbcGeom::kBsplineBasis);
+    sample.setWrap(AbcGeom::kNonPeriodic);
+    sample.setType(AbcGeom::kCubic);
+    sample.setCurvesNumVertices(Abc::Int32ArraySample(w->nverts));
+    sample.setOrders(Abc::UcharArraySample(w->orders));
+    sample.setKnots(Abc::FloatArraySample(w->knots));
+    sample.setWidths(AbcGeom::OFloatGeomParam::Sample(
+        Abc::FloatArraySample(w->widths), AbcGeom::kVertexScope));
+    sample.setPositions(Abc::P3fArraySample(positions));
+    w->schema.set(sample);
+    return XG_OK;
+  } catch (...) {
+    return alembic_error(exception_message());
+  }
+}
+
+}  // namespace
+
+int abc_write_first(int handle, const uint8_t* raw, size_t raw_len,
+                    const char* group_name, bool is_guide, int group_id) {
+  AbcObject* w = lookup_object(handle);
+  const bool implicit_object = w == nullptr;
+  if (implicit_object) {
+    int rc = ensure_implicit_object(handle, group_name, is_guide, group_id, w);
+    if (rc != XG_OK) return rc;
+  }
+  if (w->first_written) {
+    set_error("first frame already written");
+    return XG_ERR_STATE;
+  }
+  const AbcArchive* archive = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(g_handles_mutex);
+    const auto it = g_handles.find(w->archive_handle);
+    if (it == g_handles.end()) {
+      set_error("invalid archive handle");
+      return XG_ERR_INVALID_ARG;
+    }
+    archive = it->second->archive.get();
+  }
+  ParsedFrame frame;
+  int rc = parse_frame(raw, raw_len, archive->sort_by_uv, frame);
+  if (rc != XG_OK) return rc;
+  if (frame.num_curves == 0) {
+    set_error("no valid strands in the first frame");
+    return XG_ERR_MALFORMED;
+  }
+  return write_first_sample(w, frame, implicit_object, group_name);
+}
+
 int abc_write_frame(int handle, const uint8_t* raw, size_t raw_len,
                     double time) {
   (void)time;  // sample times come from the archive's time sampling
@@ -381,27 +416,68 @@ int abc_write_frame(int handle, const uint8_t* raw, size_t raw_len,
     set_error("frame vertex count does not match the first frame");
     return XG_ERR_STATE;
   }
+  return write_frame_sample(w, frame);
+}
 
-  try {
-    std::vector<Imath::V3f> positions;
-    std::vector<float> widths;
-    build_output_arrays(frame, positions, widths);
-
-    AbcGeom::OCurvesSchema::Sample sample;
-    sample.setBasis(AbcGeom::kBsplineBasis);
-    sample.setWrap(AbcGeom::kNonPeriodic);
-    sample.setType(AbcGeom::kCubic);
-    sample.setCurvesNumVertices(Abc::Int32ArraySample(w->nverts));
-    sample.setOrders(Abc::UcharArraySample(w->orders));
-    sample.setKnots(Abc::FloatArraySample(w->knots));
-    sample.setWidths(AbcGeom::OFloatGeomParam::Sample(
-        Abc::FloatArraySample(w->widths), AbcGeom::kVertexScope));
-    sample.setPositions(Abc::P3fArraySample(positions));
-    w->schema.set(sample);
-    return XG_OK;
-  } catch (...) {
-    return alembic_error(exception_message());
+int abc_write_memory_first(int handle, uint64_t pdata_addr,
+                           const char* group_name, bool is_guide,
+                           int group_id) {
+  AbcObject* w = lookup_object(handle);
+  const bool implicit_object = w == nullptr;
+  if (implicit_object) {
+    int rc = ensure_implicit_object(handle, group_name, is_guide, group_id, w);
+    if (rc != XG_OK) return rc;
   }
+  if (w->first_written) {
+    set_error("first frame already written");
+    return XG_ERR_STATE;
+  }
+  const AbcArchive* archive = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(g_handles_mutex);
+    const auto it = g_handles.find(w->archive_handle);
+    if (it == g_handles.end()) {
+      set_error("invalid archive handle");
+      return XG_ERR_INVALID_ARG;
+    }
+    archive = it->second->archive.get();
+  }
+  ParsedFrame frame;
+  int rc = parse_memory_frame(pdata_addr, archive->sort_by_uv, frame);
+  if (rc != XG_OK) return rc;
+  if (frame.num_curves == 0) {
+    set_error("no valid strands in the first frame");
+    return XG_ERR_MALFORMED;
+  }
+  return write_first_sample(w, frame, implicit_object, group_name);
+}
+
+int abc_write_memory_frame(int handle, uint64_t pdata_addr, double time) {
+  (void)time;  // sample times come from the archive's time sampling
+  AbcObject* w = resolve_object(handle);
+  if (w == nullptr) return XG_ERR_INVALID_ARG;
+  if (!w->first_written) {
+    set_error("first frame not written");
+    return XG_ERR_STATE;
+  }
+  const AbcArchive* archive = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(g_handles_mutex);
+    const auto it = g_handles.find(w->archive_handle);
+    if (it == g_handles.end()) {
+      set_error("invalid archive handle");
+      return XG_ERR_INVALID_ARG;
+    }
+    archive = it->second->archive.get();
+  }
+  ParsedFrame frame;
+  int rc = parse_memory_frame(pdata_addr, archive->sort_by_uv, frame);
+  if (rc != XG_OK) return rc;
+  if (frame.num_curves != w->num_curves || frame.num_cvs != w->num_cvs) {
+    set_error("frame vertex count does not match the first frame");
+    return XG_ERR_STATE;
+  }
+  return write_frame_sample(w, frame);
 }
 
 int abc_write_curves_first(int object_handle, const float* positions,
