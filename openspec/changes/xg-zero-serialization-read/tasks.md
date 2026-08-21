@@ -29,20 +29,21 @@
 
 ## 3. xgcore Reader (zero-serialization)
 
-- [ ] 3.1 Add C ABI declarations in `cpp/include/xgcore/xgcore.h`:
+- [x] 3.1 Add C ABI declarations in `cpp/include/xgcore/xgcore.h`:
       `xg_read_xgen_probe`, `xg_abc_write_xgen_memory_first`,
       `xg_abc_write_xgen_memory_frame`, with stable status codes and
       thread-local error messages
-- [ ] 3.2 Implement XGen symbol resolution via `GetProcAddress` (version-stable
+- [x] 3.2 Implement XGen symbol resolution via `GetProcAddress` (version-stable
       mangled names) and the documented layout reads: `MPxData + 0x10` ->
       `XgSplineData*`, item enumeration (prefer exported `itemCount` +
       `getItemByGenIndex`), stream reads (prefer exported
       `positions()`/`widthPerCV()`/`faceUV()`/`faceId()`/`primitiveInfos()`),
-      and `XgMappable` -> impl begin/end array access
-- [ ] 3.3 Fill the same flat arrays the current parser produces (positions,
+      and impl data access via virtual slots 1/4 (works for both the
+      AdskXGen.dll and xgenToolkit.mll impl classes)
+- [x] 3.3 Fill the same flat arrays the current parser produces (positions,
       widths, face ids/uvs, primitive records, strand order) and reuse the
       existing UV sort + Alembic writer unchanged
-- [ ] 3.4 Add unit tests with a captured/synthetic in-memory `XgSplineData`
+- [x] 3.4 Add unit tests with a captured/synthetic in-memory `XgSplineData`
       layout, rebuild, and re-verify `xgcore.dll` has no external
       dependencies beyond the OS
 
