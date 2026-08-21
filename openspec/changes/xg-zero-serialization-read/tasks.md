@@ -82,7 +82,7 @@
 - [x] 6.1 Profile per-frame stage timings before/after the change
       (ConvertToInteractive, direct read, sort, Alembic write) at density 10
       and record the breakdown in design.md
-- [ ] 6.2 Update `cpp/README.md` and `docs/maya-agent-debugging.md`: dev-loop
+- [x] 6.2 Update `cpp/README.md` and `docs/maya-agent-debugging.md`: dev-loop
       recipe, zero-serialization usage, fallback semantics, and the layout /
       symbol re-verification checklist (`pe_exports.py` per supported Maya
       version)
