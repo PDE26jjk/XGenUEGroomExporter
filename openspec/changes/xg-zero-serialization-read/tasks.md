@@ -11,19 +11,19 @@
 
 ## 2. DLL Development Loop
 
-- [ ] 2.1 Extend `_xgc_find_dll()` in all four exporter scripts:
+- [x] 2.1 Extend `_xgc_find_dll()` in all four exporter scripts:
       `XGEN_XGCORE_DLL` env var -> sidecar `xgcore_dev_path.txt` (re-read at
       export time) -> newest `xgcore_dev_*.dll` -> existing fixed
       `xgcore.dll` search
-- [ ] 2.2 Implement lazy `_xgc_load(force=False)`; in development mode reload
+- [x] 2.2 Implement lazy `_xgc_load(force=False)`; in development mode reload
       before each export so a rebuilt DLL is picked up without restarting
       Maya; guard against reload while a `CppArchive` is open; keep the
       import-time single load in release mode
-- [ ] 2.3 Add `cpp/scripts/build_dev.ps1` that builds into a separate
+- [x] 2.3 Add `cpp/scripts/build_dev.ps1` that builds into a separate
       `cpp/build_dev/` directory and copies the result to
       `xgcore_dev_<timestamp>.dll` in the searched staging location, never
       overwriting a locked module
-- [ ] 2.4 Verify the agent-driven iteration loop on the running Maya 2025
+- [x] 2.4 Verify the agent-driven iteration loop on the running Maya 2025
       without a restart: rebuild -> new dev DLL -> next export uses it
       (record the recipe in `docs/maya-agent-debugging.md`)
 

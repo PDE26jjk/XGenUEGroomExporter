@@ -242,3 +242,28 @@ ruled out: its dereference does not point to the `MPxData` object.
 **Decision gate (change `xg-zero-serialization-read`, task 1.2): the
 zero-serialization route is viable.** The reader lives in `xgcore.dll` and
 receives the address as an integer from the snippet above.
+
+## DLL dev loop (verified 2026-08-21, no Maya restart)
+
+The embedded wrapper supports a development iteration loop without
+restarting Maya. Discovery order (all four exporter scripts):
+
+1. `XGEN_XGCORE_DLL` environment variable (absolute path);
+2. sidecar file `xgcore_dev_path.txt` (first one found in the script dir,
+   Maya user script dir, or cwd; re-read at export time);
+3. newest `xgcore_dev_*.dll` in the same directories (by mtime);
+4. the original fixed `xgcore.dll` search (script dir, userScriptDir, cwd,
+   PATH).
+
+In development mode (any of 1-3 present) `save_abc` reloads the DLL before
+each export, so a rebuilt DLL is picked up without restarting Maya. Release
+behavior is unchanged: one load at script import. Reload is refused while a
+`CppArchive` is open.
+
+Build script: `cpp/scripts/build_dev.ps1` builds into `cpp/build_dev/` and
+stages `xgcore_dev_<timestamp>.dll` (never touching a locked module).
+
+Verified on the running Maya 2025: after `importlib.reload`, the wrapper
+loaded the newest dev DLL; writing the sidecar switched the loaded module to
+the pointed-at DLL; deleting the sidecar switched back to the newest dev DLL;
+an accelerated export ran end-to-end (4.55 s) through the dev DLL.

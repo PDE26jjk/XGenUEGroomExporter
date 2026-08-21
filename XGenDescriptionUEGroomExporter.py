@@ -947,23 +947,27 @@ import os as _xgc_os
 _xgc_available = False
 _xgc_dll = None
 _xgc_error = ""
+_xgc_loaded_path = None
+_xgc_archive_open = False
 
 
-def _xgc_find_dll():
-    candidates = []
+def _xgc_search_dirs(_include_path=True):
+    _dirs = []
     _script_file = globals().get('__file__')
     if _script_file:
-        candidates.append(_xgc_os.path.dirname(_xgc_os.path.abspath(_script_file)))
+        _dirs.append(_xgc_os.path.dirname(_xgc_os.path.abspath(_script_file)))
     try:
-        candidates.append(cmds.internalVar(userScriptDir=True))
+        _dirs.append(cmds.internalVar(userScriptDir=True))
     except Exception:
         pass
-    candidates.append(_xgc_os.getcwd())
-    for _p in _xgc_os.environ.get("PATH", "").split(_xgc_os.pathsep):
-        if _p:
-            candidates.append(_p)
+    _dirs.append(_xgc_os.getcwd())
+    if _include_path:
+        for _p in _xgc_os.environ.get("PATH", "").split(_xgc_os.pathsep):
+            if _p:
+                _dirs.append(_p)
+    _out = []
     _seen = set()
-    for _d in candidates:
+    for _d in _dirs:
         try:
             _d = _xgc_os.path.abspath(_d)
         except Exception:
@@ -971,6 +975,58 @@ def _xgc_find_dll():
         if _d in _seen:
             continue
         _seen.add(_d)
+        _out.append(_d)
+    return _out
+
+
+def _xgc_read_sidecar():
+    for _d in _xgc_search_dirs(False):
+        _p = _xgc_os.path.join(_d, "xgcore_dev_path.txt")
+        try:
+            with open(_p, "r") as _fh:
+                _line = _fh.read().strip()
+            if _line:
+                return _xgc_os.path.abspath(_line)
+        except Exception:
+            pass
+    return None
+
+
+def _xgc_dev_dlls():
+    _found = []
+    for _d in _xgc_search_dirs(False):
+        try:
+            for _f in _xgc_os.listdir(_d):
+                if _f.startswith("xgcore_dev_") and _f.endswith(".dll"):
+                    _found.append(_xgc_os.path.join(_d, _f))
+        except Exception:
+            pass
+    return _found
+
+
+def _xgc_is_dev_mode():
+    if _xgc_os.environ.get("XGEN_XGCORE_DLL"):
+        return True
+    if _xgc_read_sidecar():
+        return True
+    if _xgc_dev_dlls():
+        return True
+    return False
+
+
+def _xgc_find_dll():
+    _env = _xgc_os.environ.get("XGEN_XGCORE_DLL")
+    if _env:
+        _candidate = _xgc_os.path.abspath(_env)
+        if _xgc_os.path.isfile(_candidate):
+            return _candidate
+    _sidecar = _xgc_read_sidecar()
+    if _sidecar and _xgc_os.path.isfile(_sidecar):
+        return _sidecar
+    _dev = _xgc_dev_dlls()
+    if _dev:
+        return max(_dev, key=lambda _p: _xgc_os.path.getmtime(_p))
+    for _d in _xgc_search_dirs(True):
         _candidate = _xgc_os.path.join(_d, "xgcore.dll")
         if _xgc_os.path.isfile(_candidate):
             return _candidate
@@ -1026,18 +1082,28 @@ class _XgParseInfo(_xgc_ctypes.Structure):
     ]
 
 
-try:
-    _xgc_path = _xgc_find_dll()
-    if _xgc_path:
-        _xgc_dll = _xgc_ctypes.cdll.LoadLibrary(_xgc_path)
-        _xgc_dll.xg_last_error.restype = _xgc_ctypes.c_char_p
+def _xgc_load(_force=False):
+    global _xgc_dll, _xgc_available, _xgc_error, _xgc_loaded_path
+    if _force and _xgc_archive_open:
+        _xgc_error = "xgcore: cannot reload the DLL while an archive is open"
+        return _xgc_available
+    try:
+        _path = _xgc_find_dll()
+        if _path is None:
+            _xgc_available = False
+            _xgc_error = "xgcore.dll not found"
+            return False
+        if not _force and _xgc_dll is not None and _xgc_loaded_path == _path:
+            return _xgc_available
+        _dll = _xgc_ctypes.cdll.LoadLibrary(_path)
+        _dll.xg_last_error.restype = _xgc_ctypes.c_char_p
 
-        _xgc_dll.xg_parse_frame_size.argtypes = [
+        _dll.xg_parse_frame_size.argtypes = [
             _xgc_ctypes.c_char_p, _xgc_ctypes.c_size_t, _xgc_ctypes.c_int,
             _xgc_ctypes.POINTER(_XgParseInfo)]
-        _xgc_dll.xg_parse_frame_size.restype = _xgc_ctypes.c_int
+        _dll.xg_parse_frame_size.restype = _xgc_ctypes.c_int
 
-        _xgc_dll.xg_parse_frame.argtypes = [
+        _dll.xg_parse_frame.argtypes = [
             _xgc_ctypes.c_char_p, _xgc_ctypes.c_size_t, _xgc_ctypes.c_int,
             _xgc_ctypes.POINTER(_xgc_ctypes.c_float),
             _xgc_ctypes.POINTER(_xgc_ctypes.c_int32),
@@ -1045,38 +1111,38 @@ try:
             _xgc_ctypes.POINTER(_xgc_ctypes.c_float),
             _xgc_ctypes.POINTER(_xgc_ctypes.c_int32),
             _xgc_ctypes.POINTER(_XgParseInfo)]
-        _xgc_dll.xg_parse_frame.restype = _xgc_ctypes.c_int
+        _dll.xg_parse_frame.restype = _xgc_ctypes.c_int
 
-        _xgc_dll.xg_parse_face.argtypes = [
+        _dll.xg_parse_face.argtypes = [
             _xgc_ctypes.c_char_p, _xgc_ctypes.c_size_t, _xgc_ctypes.c_int,
             _xgc_ctypes.POINTER(_xgc_ctypes.c_int32),
             _xgc_ctypes.POINTER(_xgc_ctypes.c_float),
             _xgc_ctypes.POINTER(_xgc_ctypes.c_int32),
             _xgc_ctypes.POINTER(_xgc_ctypes.c_int64)]
-        _xgc_dll.xg_parse_face.restype = _xgc_ctypes.c_int
+        _dll.xg_parse_face.restype = _xgc_ctypes.c_int
 
-        _xgc_dll.xg_abc_open.argtypes = [
+        _dll.xg_abc_open.argtypes = [
             _xgc_ctypes.c_char_p, _xgc_ctypes.c_double, _xgc_ctypes.c_double,
             _xgc_ctypes.c_int, _xgc_ctypes.c_int,
             _xgc_ctypes.POINTER(_xgc_ctypes.c_int)]
-        _xgc_dll.xg_abc_open.restype = _xgc_ctypes.c_int
+        _dll.xg_abc_open.restype = _xgc_ctypes.c_int
 
-        _xgc_dll.xg_abc_add_curves.argtypes = [
+        _dll.xg_abc_add_curves.argtypes = [
             _xgc_ctypes.c_int, _xgc_ctypes.c_char_p, _xgc_ctypes.c_int,
             _xgc_ctypes.c_int, _xgc_ctypes.POINTER(_xgc_ctypes.c_int)]
-        _xgc_dll.xg_abc_add_curves.restype = _xgc_ctypes.c_int
+        _dll.xg_abc_add_curves.restype = _xgc_ctypes.c_int
 
-        _xgc_dll.xg_abc_write_first.argtypes = [
+        _dll.xg_abc_write_first.argtypes = [
             _xgc_ctypes.c_int, _xgc_ctypes.c_char_p, _xgc_ctypes.c_size_t,
             _xgc_ctypes.c_char_p, _xgc_ctypes.c_int, _xgc_ctypes.c_int]
-        _xgc_dll.xg_abc_write_first.restype = _xgc_ctypes.c_int
+        _dll.xg_abc_write_first.restype = _xgc_ctypes.c_int
 
-        _xgc_dll.xg_abc_write_frame.argtypes = [
+        _dll.xg_abc_write_frame.argtypes = [
             _xgc_ctypes.c_int, _xgc_ctypes.c_char_p, _xgc_ctypes.c_size_t,
             _xgc_ctypes.c_double]
-        _xgc_dll.xg_abc_write_frame.restype = _xgc_ctypes.c_int
+        _dll.xg_abc_write_frame.restype = _xgc_ctypes.c_int
 
-        _xgc_dll.xg_abc_write_curves_first.argtypes = [
+        _dll.xg_abc_write_curves_first.argtypes = [
             _xgc_ctypes.c_int,
             _xgc_ctypes.POINTER(_xgc_ctypes.c_float),
             _xgc_ctypes.POINTER(_xgc_ctypes.c_int32),
@@ -1084,45 +1150,58 @@ try:
             _xgc_ctypes.POINTER(_xgc_ctypes.c_float),
             _xgc_ctypes.POINTER(_xgc_ctypes.c_float),
             _xgc_ctypes.c_int64, _xgc_ctypes.c_int64, _xgc_ctypes.c_int64]
-        _xgc_dll.xg_abc_write_curves_first.restype = _xgc_ctypes.c_int
+        _dll.xg_abc_write_curves_first.restype = _xgc_ctypes.c_int
 
-        _xgc_dll.xg_abc_write_curves_frame.argtypes = [
+        _dll.xg_abc_write_curves_frame.argtypes = [
             _xgc_ctypes.c_int, _xgc_ctypes.POINTER(_xgc_ctypes.c_float),
             _xgc_ctypes.c_int64]
-        _xgc_dll.xg_abc_write_curves_frame.restype = _xgc_ctypes.c_int
+        _dll.xg_abc_write_curves_frame.restype = _xgc_ctypes.c_int
 
-        _xgc_dll.xg_abc_write_arb_string.argtypes = [
+        _dll.xg_abc_write_arb_string.argtypes = [
             _xgc_ctypes.c_int, _xgc_ctypes.c_char_p,
             _xgc_ctypes.POINTER(_xgc_ctypes.c_char_p), _xgc_ctypes.c_int64]
-        _xgc_dll.xg_abc_write_arb_string.restype = _xgc_ctypes.c_int
+        _dll.xg_abc_write_arb_string.restype = _xgc_ctypes.c_int
 
-        _xgc_dll.xg_abc_write_arb_int32.argtypes = [
+        _dll.xg_abc_write_arb_int32.argtypes = [
             _xgc_ctypes.c_int, _xgc_ctypes.c_char_p,
             _xgc_ctypes.POINTER(_xgc_ctypes.c_int32), _xgc_ctypes.c_int64]
-        _xgc_dll.xg_abc_write_arb_int32.restype = _xgc_ctypes.c_int
+        _dll.xg_abc_write_arb_int32.restype = _xgc_ctypes.c_int
 
-        _xgc_dll.xg_abc_write_arb_float.argtypes = [
+        _dll.xg_abc_write_arb_float.argtypes = [
             _xgc_ctypes.c_int, _xgc_ctypes.c_char_p,
             _xgc_ctypes.POINTER(_xgc_ctypes.c_float), _xgc_ctypes.c_int64]
-        _xgc_dll.xg_abc_write_arb_float.restype = _xgc_ctypes.c_int
+        _dll.xg_abc_write_arb_float.restype = _xgc_ctypes.c_int
 
-        _xgc_dll.xg_abc_write_arb_v2f.argtypes = [
+        _dll.xg_abc_write_arb_v2f.argtypes = [
             _xgc_ctypes.c_int, _xgc_ctypes.c_char_p,
             _xgc_ctypes.POINTER(_xgc_ctypes.c_float), _xgc_ctypes.c_int64]
-        _xgc_dll.xg_abc_write_arb_v2f.restype = _xgc_ctypes.c_int
+        _dll.xg_abc_write_arb_v2f.restype = _xgc_ctypes.c_int
 
-        _xgc_dll.xg_abc_write_root_uv.argtypes = [
+        _dll.xg_abc_write_root_uv.argtypes = [
             _xgc_ctypes.c_int, _xgc_ctypes.POINTER(_xgc_ctypes.c_float),
             _xgc_ctypes.c_size_t]
-        _xgc_dll.xg_abc_write_root_uv.restype = _xgc_ctypes.c_int
+        _dll.xg_abc_write_root_uv.restype = _xgc_ctypes.c_int
 
-        _xgc_dll.xg_abc_close.argtypes = [_xgc_ctypes.c_int]
-        _xgc_dll.xg_abc_close.restype = _xgc_ctypes.c_int
+        _dll.xg_abc_close.argtypes = [_xgc_ctypes.c_int]
+        _dll.xg_abc_close.restype = _xgc_ctypes.c_int
 
+        _xgc_dll = _dll
+        _xgc_loaded_path = _path
         _xgc_available = True
-except Exception as _e:
-    _xgc_available = False
-    _xgc_error = str(_e)
+        _xgc_error = ""
+        return True
+    except Exception as _e:
+        _xgc_available = False
+        _xgc_error = str(_e)
+        return False
+
+
+def _xgc_set_archive_open(_v):
+    global _xgc_archive_open
+    _xgc_archive_open = bool(_v)
+
+
+_xgc_load(False)
 
 
 def getXgenRawData(_fnDepNode):
@@ -1265,6 +1344,7 @@ class CppArchive(object):
             "xg_abc_open")
         self.handle = _handle.value
         self.closed = False
+        _xgc_set_archive_open(True)
 
     def addTimeSampling(self, _timeSampling):
         return 0  # mirror OArchive; sampling is configured at open()
@@ -1286,6 +1366,7 @@ class CppArchive(object):
             return
         _xgc_check(_xgc_dll.xg_abc_close(self.handle), "xg_abc_close")
         self.closed = True
+        _xgc_set_archive_open(False)
 
 
 class CppCurvesProxy(object):
@@ -2002,6 +2083,12 @@ class SaveXGenDesWindow(QtWidgets.QDialog):
 
             sec = om.MTime(1, om.MTime.kSeconds)
             spf = 1.0 / sec.asUnits(om.MTime.uiUnit())
+        if _xgc_is_dev_mode():
+            _xgc_load(True)
+            try:
+                self.useCpp_cb.setEnabled(_xgc_available)
+            except Exception:
+                pass
         useCpp = _xgc_available and self.useCpp_cb.isChecked()
         self._cpp_archive = None
         self._cpp_path = None
