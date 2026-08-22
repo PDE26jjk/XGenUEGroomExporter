@@ -86,6 +86,15 @@
       recipe, zero-serialization usage, fallback semantics, and the layout /
       symbol re-verification checklist (`pe_exports.py` per supported Maya
       version)
-- [ ] 6.3 Maya 2019 runtime verification: requires a 2019 machine; the IDA
-      report's layout evidence covers it until then (documented follow-up,
-      not a blocker for the Maya 2025 work)
+- [x] 6.3 Maya 2019 runtime verification (2026-08-22, `hair_2019.mb`,
+      description `description27`): pointer acquisition, layout probe,
+      static export, guide-animation export, and spline-animation export all
+      pass; direct-memory and serialized outputs are byte-identical
+      (SHA-256). Notes: the `_py2` twins needed a Python 2 encoding
+      declaration before they would import; a `reload()` of the exporter
+      module inside the 2019 (Python 2.7) test process was followed by two
+      `xgenToolkit.mll` crashes (0xc0000005) during spline-animation
+      exports - mechanism unconfirmed (possibly Python 2 `reload` / ctypes
+      specifics; not reproduced on Maya 2025 with `importlib.reload()`), so
+      test scripts avoid module reload and restore patched attributes with
+      try/finally

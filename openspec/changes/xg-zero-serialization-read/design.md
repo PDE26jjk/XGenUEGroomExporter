@@ -231,8 +231,35 @@ disassembly of the 2025 binaries):
 - Bake-UV and ptex-guide-id exports keep the serialized route (they need
   face/root parsing); parity there holds by construction.
 
+## Verified results (Maya 2019, 2026-08-22)
+
+Runtime verification on Maya 2019 (`hair_2019.mb`, description
+`description27`, Python 2.7 with the `_py2` exporter twins):
+
+- Pointer acquisition works: legacy `maya.OpenMaya` `.this` yields the
+  `MPxData*` (`thisown=False`); `MPxData + 0x10` gives a non-null
+  `XgSplineData*`, and `xg_read_xgen_probe` succeeds.
+- Static export (high-density scene, 164,463 curves, 19.9 MB archive):
+  direct-memory 0.76 s vs serialized 2.15 s; outputs byte-identical
+  (SHA-256).
+- Guide-animation export (animation on, spline animation off) exports
+  normally: description 1 sample, guides 2 samples.
+- Spline-animation export (2 frames): direct-memory 0.34 s vs serialized
+  1.48 s; description and guides both 2 samples; outputs byte-identical
+  (SHA-256).
+- The same dev DLL was used for both versions; the animated control on
+  Maya 2025 passed (6.58 s memory vs 13.46 s serialized, byte-identical).
+
 ## Open Questions
 
-- Runtime confirmation on Maya 2019 requires a 2019 machine; the report's
-  layout verification is the evidence until then (the 2019 step is a
-  documented follow-up, not a blocker for the 2025 work).
+- Runtime confirmation on Maya 2019 is done (2026-08-22, see above); the
+  IDA-based layout evidence is now backed by live verification on both
+  versions.
+- Two `xgenToolkit.mll` crashes (0xc0000005, offset 0x29707) occurred on
+  Maya 2019 (Python 2.7) during spline-animation exports in the agent's
+  test process *after* `reload()` of the exporter module. The same flow with
+  `importlib.reload()` on Maya 2025 (Python 3.11) did not reproduce, and
+  exports without module reload pass on both versions. The mechanism is
+  unconfirmed and may be specific to Python 2 `reload` semantics / ctypes
+  DLL handle release; agent test scripts should avoid module reload and
+  restore patched module attributes with try/finally.

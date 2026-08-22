@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 # %%
 import alembic.Abc as abc
 import alembic.AbcGeom as abcGeom
