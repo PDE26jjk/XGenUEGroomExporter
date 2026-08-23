@@ -306,3 +306,30 @@ Reports same-index root displacement, root-set identity, matched-by-root
 geometry deltas, and per-frame CV consistency. Geometry deltas in animated
 scenes are expected (e.g. guide 3's tip is keyframed by animCurves), not
 sorting failures.
+
+## Refresh DLL, cleanup and undo options (exporter-usability-fixes)
+
+Both exporter windows expose a **Refresh DLL** button that re-runs
+`_xgc_load(force=True)` in the current session, updates the "Use C++
+acceleration" checkbox, and shows the loaded DLL path or the load error. This
+lets a user place or replace `xgcore.dll` after the script was imported
+without restarting Maya. On failure the message shows the concrete error and
+the full list of searched directories (plus the `XGEN_XGCORE_DLL` escape
+hatch), so users know where to put the DLL. The refresh is refused while an
+archive is open.
+
+Animated exports now delete each frame's temporary `z<hash>` spline node
+after that frame is written and remove all remaining temporary nodes at
+export end (both success and failure paths), and run with scene undo disabled
+for the duration of the export, restoring the previous undo state afterwards.
+
+The **Keep temporary data** checkbox (default off) preserves the old
+behavior for debugging: temporary nodes stay in the scene and undo stays
+enabled during export.
+
+Known limitation (Maya 2019 / Python 2.7): re-importing the exporter module
+(`reload()` or a fresh `import` after deleting `sys.modules` entries) and
+forcing an in-session DLL reload were each followed by crashes
+(`xgenToolkit.mll` or `python27.dll` access violations) in agent test
+processes. The mechanism is not yet confirmed; test scripts should run in a
+freshly started Maya rather than re-importing the module mid-session.

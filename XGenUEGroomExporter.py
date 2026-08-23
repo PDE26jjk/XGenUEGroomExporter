@@ -1235,6 +1235,14 @@ class SaveXGenWindow(QtWidgets.QDialog):
         self.useCpp_cb.setEnabled(_xgc_available)
         hBox.addWidget(self.useCpp_cb)
 
+        self.keepTemp_cb = QtWidgets.QCheckBox("Keep temporary data")
+        self.keepTemp_cb.setChecked(False)
+        hBox.addWidget(self.keepTemp_cb)
+
+        self.refreshCpp_button = QtWidgets.QPushButton("Refresh DLL")
+        self.refreshCpp_button.clicked.connect(self.refresh_dll)
+        hBox.addWidget(self.refreshCpp_button)
+
         frameLayout.addLayout(hBox)
 
         self.save_button = QtWidgets.QPushButton("Save Alembic File", self)
@@ -1274,7 +1282,23 @@ class SaveXGenWindow(QtWidgets.QDialog):
         selected_option = self.combo.currentText()
         self.uvSetStr.setText(selected_option)
 
+    def refresh_dll(self):
+        _xgc_load(True)
+        self.useCpp_cb.setEnabled(_xgc_available)
+        if _xgc_available:
+            _msg = "xgcore loaded:\n%s" % _xgc_loaded_path
+        else:
+            _dirs = "\n".join(_xgc_search_dirs(False))
+            _msg = ("xgcore unavailable:\n%s\n\nPlace xgcore.dll in one of "
+                    "these directories (or set XGEN_XGCORE_DLL):\n%s"
+                    % (_xgc_error, _dirs))
+        QtWidgets.QMessageBox.information(self, "Refresh DLL", _msg)
+
     def save_abc(self):
+        _keepTemp = self.keepTemp_cb.isChecked()
+        _undoState = cmds.undoInfo(query=True, state=True)
+        if not _keepTemp:
+            cmds.undoInfo(state=False)
         try:
             return self._save_abc_impl()
         except Exception:
@@ -1289,6 +1313,9 @@ class SaveXGenWindow(QtWidgets.QDialog):
                 except Exception:
                     pass
             raise
+        finally:
+            if not _keepTemp:
+                cmds.undoInfo(state=_undoState)
 
     def _save_abc_impl(self):
         if len(self.contentList) == 0:

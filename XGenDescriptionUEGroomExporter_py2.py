@@ -20,7 +20,7 @@ import xgenm as xg
 import os
 import itertools
 
-_XGenExporterVersion = "1.09"
+_XGenExporterVersion = "2.00"
 print_debug = False
 
 
@@ -370,6 +370,16 @@ def deleteSaveXGenDesWindowParent():
         cmds.delete(SaveXGenDesWindowParentName)
 
 
+def _xgc_delete_temp_spline(spline):
+    """Delete the temporary transform that hosts a converted spline node."""
+    try:
+        _parent = spline.parent(0)
+        _path = om2.MDagPath.getAPathTo(_parent)
+        cmds.delete(_path.fullPathName())
+    except Exception:
+        pass
+
+
 # %%
 
 
@@ -561,6 +571,7 @@ class XGenProxyEveryFrame(CurvesProxy):
         super(XGenProxyEveryFrame, self).__init__(curveObj, None, needRootList, animation)
         self.descFnDepNode = descFnDepNode
         self.sorted_offset_map = None
+        self._xgc_keep_temp = False
 
     def write_first_frame(self):
         if print_debug:
@@ -754,6 +765,8 @@ class XGenProxyEveryFrame(CurvesProxy):
         self.schema.set(samp)
         if print_debug:
             print("write_frame: %.4f" % (time.time() - startTime))
+        if not self._xgc_keep_temp:
+            _xgc_delete_temp_spline(spline)
 
 
 # %%
@@ -1686,6 +1699,7 @@ class CppXGenProxyEveryFrame(CppCurvesProxy):
         self.numCurves = 0
         self.numCVs = 0
         self._xgc_use_memory = False
+        self._xgc_keep_temp = False
 
     def write_first_frame(self):
         spline = ConvertToInteractive(self.descFnDepNode)
@@ -1722,6 +1736,8 @@ class CppXGenProxyEveryFrame(CppCurvesProxy):
         else:
             raw = getXgenRawData(spline)
             _xgc_write_frame(self.object_handle, raw)
+        if not self._xgc_keep_temp:
+            _xgc_delete_temp_spline(spline)
 
 
 # %%
@@ -1952,6 +1968,14 @@ class SaveXGenDesWindow(QtWidgets.QDialog):
         self.useCpp_cb.setEnabled(_xgc_available)
         hBox.addWidget(self.useCpp_cb)
 
+        self.keepTemp_cb = QtWidgets.QCheckBox("Keep temporary data")
+        self.keepTemp_cb.setChecked(False)
+        hBox.addWidget(self.keepTemp_cb)
+
+        self.refreshCpp_button = QtWidgets.QPushButton("Refresh DLL")
+        self.refreshCpp_button.clicked.connect(self.refresh_dll)
+        hBox.addWidget(self.refreshCpp_button)
+
         frameLayout.addLayout(hBox)
 
         self.save_button = QtWidgets.QPushButton("Save Alembic File", self)
@@ -2107,7 +2131,35 @@ class SaveXGenDesWindow(QtWidgets.QDialog):
     def clear_temp(self):
         deleteSaveXGenDesWindowParent()
 
+    def refresh_dll(self):
+        _xgc_load(True)
+        self.useCpp_cb.setEnabled(_xgc_available)
+        if _xgc_available:
+            _msg = "xgcore loaded:\n%s" % _xgc_loaded_path
+        else:
+            _err = _xgc_error
+            if isinstance(_err, bytes):
+                _err = _err.decode('utf-8', 'replace')
+            _dir_list = []
+            for _d in _xgc_search_dirs(False):
+                if isinstance(_d, bytes):
+                    try:
+                        _d = _d.decode('gbk')
+                    except Exception:
+                        _d = _d.decode('utf-8', 'replace')
+                _dir_list.append(_d)
+            _dirs = "\n".join(_dir_list)
+            _msg = ("xgcore unavailable:\n%s\n\nPlace xgcore.dll in one of "
+                    "these directories (or set XGEN_XGCORE_DLL):\n%s"
+                    % (_err, _dirs))
+        QtWidgets.QMessageBox.information(self, "Refresh DLL", _msg)
+
     def save_abc(self):
+        _keepTemp = self.keepTemp_cb.isChecked()
+        self._xgc_keep_temp = _keepTemp
+        _undoState = cmds.undoInfo(query=True, state=True)
+        if not _keepTemp:
+            cmds.undoInfo(state=False)
         try:
             return self._save_abc_impl()
         except Exception:
@@ -2122,6 +2174,13 @@ class SaveXGenDesWindow(QtWidgets.QDialog):
                 except Exception:
                     pass
             raise
+        finally:
+            if not _keepTemp:
+                try:
+                    deleteSaveXGenDesWindowParent()
+                except Exception:
+                    pass
+                cmds.undoInfo(state=_undoState)
 
     def _save_abc_impl(self):
         if len(self.contentList) == 0:
@@ -2191,6 +2250,7 @@ class SaveXGenDesWindow(QtWidgets.QDialog):
                     objectHandle = archive.add_curves(str(fnDepNode.name()), False, -1)
                     xgenProxy = CppXGenProxyEveryFrame(objectHandle, item.fnDepNode,
                                                        needBakeUV | useGuide, item.splineAnimation)
+                    xgenProxy._xgc_keep_temp = getattr(self, "_xgc_keep_temp", False)
                     xgenProxy.needBakeUV = needBakeUV
                     xgenProxy.needGuideIds = useGuide and item.writePtexGuideId
                     xgenProxy.write_group_name(item.groupName.text())
@@ -2211,6 +2271,7 @@ class SaveXGenDesWindow(QtWidgets.QDialog):
                         curveObj = abcGeom.OCurves(archive.getTop(), str(fnDepNode.name()))
                     xgenProxy = XGenProxyEveryFrame(curveObj, item.fnDepNode, needBakeUV | useGuide,
                                                     item.splineAnimation)
+                    xgenProxy._xgc_keep_temp = getattr(self, "_xgc_keep_temp", False)
                     xgenProxy.needBakeUV = needBakeUV
                     xgenProxy.write_group_name(item.groupName.text())
                     if useGuide:
