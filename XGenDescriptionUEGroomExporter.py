@@ -19,7 +19,7 @@ import os
 import itertools
 
 _XGenExporterVersion = "2.00"
-print_debug = True
+print_debug = False
 
 
 # %%

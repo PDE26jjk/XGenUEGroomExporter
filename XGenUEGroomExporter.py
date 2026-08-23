@@ -15,7 +15,7 @@ import time
 import struct
 
 # %%
-print_debug = True
+print_debug = False
 
 
 # %%
