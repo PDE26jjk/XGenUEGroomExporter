@@ -33,12 +33,28 @@ Maya2025版本可用。[用法视频](https://www.bilibili.com/video/BV1U7mzYDEA
 
 ## 可选加速
 
-如果希望导出更快，可以在导出窗口勾选 "Use C++ acceleration"（需要把
-`xgcore.dll` 放在脚本旁边或 Maya 脚本目录）。不勾选时，行为与旧版完全一致。
+如果希望导出更快，可以在导出窗口勾选 "Use C++ acceleration"（需要
+`xgcore.dll`）。不勾选时，行为与旧版完全一致。
+
+### 获取 xgcore.dll
+
+从 GitHub Releases 页面下载：
+<https://github.com/PDE26jjk/XGenUEGroomExporter/releases>
+（选择最新版本，下载 `xgcore.dll` 附件）。
+
+### 刷新按钮
+
+下载后打开导出窗口，点击 **Refresh DLL** 按钮：
+
+- 成功：显示已加载的 DLL 路径；
+- 失败：显示错误信息，以及应当放置 `xgcore.dll` 的目录列表（按列表放置
+  后再次点击即可）。
+
+确认 "Use C++ acceleration" 复选框可用后勾选即可加速导出。
 
 ## XGenUEGroomExporter用法说明：
 
-![image-20250114225246322](https://raw.githubusercontent.com/PDE26jjk/misc/main/img/image-20250114225246322.png)
+![image-20260823231423995](https://raw.githubusercontent.com/PDE26jjk/misc/main/img/image-20260823231423995.png)
 
 这个脚本将曲线和可交互XGen导出成UE可识别的Groom。
 
@@ -50,7 +66,7 @@ UV烘焙：将会识别XGen的绑定Mesh，可以按Pick other mesh选择其他M
 
 ## XGenDescriptionUEGroomExporter用法说明：
 
-![image-20250114223649517](https://raw.githubusercontent.com/PDE26jjk/misc/main/img/image-20250114223649517.png)
+![image-20260823223452325](https://raw.githubusercontent.com/PDE26jjk/misc/main/img/image-20260823223452325.png)
 
 这个脚本专门将带有导向的XGen描述导出成UE可识别的Groom。
 
@@ -67,7 +83,7 @@ write guide id from ptex 选项：选择一张ptex贴图，将会将对应颜色
 # English version
 ## Usage Instructions for XGenUEGroomExporter:
 
-![image-20250114225246322](https://raw.githubusercontent.com/PDE26jjk/misc/main/img/image-20250114225246322.png)
+![image-20260823231423995](https://raw.githubusercontent.com/PDE26jjk/misc/main/img/image-20260823231423995.png)
 
 This script exports curves and interactive XGen descriptions into UE-recognizable Groom format.
 
@@ -83,7 +99,7 @@ Once **Animation** is selected, animated data can be exported, with the frame ra
 
 ## Usage Instructions for XGenDescriptionUEGroomExporter:
 
-![image-20250114223649517](https://raw.githubusercontent.com/PDE26jjk/misc/main/img/image-20250114223649517.png)
+![image-20260823223452325](https://raw.githubusercontent.com/PDE26jjk/misc/main/img/image-20260823223452325.png)
 
 This script specifically exports XGen descriptions with guides into UE-recognizable Groom format.
 
@@ -100,5 +116,22 @@ The interactive XGen generated during the process will be placed under a parent 
 ## Optional Acceleration
 
 To export faster, check "Use C++ acceleration" in the export window (requires
-`xgcore.dll` next to the script or in Maya's script folder). When unchecked,
-behavior is identical to the old version.
+`xgcore.dll`). When unchecked, behavior is identical to the old version.
+
+### Getting xgcore.dll
+
+Download `xgcore.dll` from the GitHub Releases page:
+<https://github.com/PDE26jjk/XGenUEGroomExporter/releases>
+(pick the latest release and download the `xgcore.dll` asset).
+
+### Refresh button
+
+After downloading, open the export window and click **Refresh DLL**:
+
+- On success it shows the loaded DLL path;
+- On failure it shows the error and the list of directories where
+  `xgcore.dll` should be placed (place it in one of those directories and
+  click again).
+
+Once the "Use C++ acceleration" checkbox becomes enabled, check it to speed
+up exports.
